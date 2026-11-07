@@ -1,138 +1,91 @@
-"""Write a :class:`Sheet` as an XPS FixedPage (the drawing part of a DWFx)."""
+"""Write a prepared sheet as an XPS FixedPage (the drawing part of a DWFx).
+
+The markup follows the dialect that Autodesk's XAML translator (used by
+Design Review) understands; see prepare.py for the background:
+
+* every shape is a ``<Path>`` with a ``Name`` made of the W2X name prefix
+  and a running number, so W2X entries can refer to it,
+* coordinates are whole numbers on the prepared grid,
+* path data uses only "M" (move), "L" (line) and "Z" (close).
+"""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-
-from .model import Group, ImageShape, Matrix, PathShape, Sheet, Style
 from .pdf_reader import fmt
+from .prepare import UNITS_PER_MM, Prepared, Prim
+from .model import Style
 
 XPS_NS = "http://schemas.microsoft.com/xps/2005/06"
-# XPS measures in 1/96 inch; PDF in 1/72 inch.
-PT_TO_XPS = 96 / 72
+# XPS measures in 1/96 inch.
+UNITS_TO_XPS = 96 / (25.4 * UNITS_PER_MM)
+# Shape names are NAME_PREFIX + number. Number 0 is reserved for the
+# sheet-wide W2X entries (units, view); shapes start at 1.
+NAME_PREFIX = "N_"
 
 
-def _matrix(m: Matrix) -> str:
-    return ",".join(fmt(v, 10) for v in m)
+def _data(prim: Prim) -> str:
+    parts: list[str] = []
+    for contour, closed in zip(prim.contours, prim.closed):
+        x0, y0 = contour[0]
+        rest = " ".join(f"{x},{y}" for x, y in contour[1:])
+        parts.append(f"M{x0},{y0} L{rest}" + (" Z" if closed else ""))
+    return " ".join(parts)
 
 
-def _style_attrs(style: Style) -> str:
-    attrs: list[str] = []
-    if style.fill:
-        attrs.append(f'Fill="{style.fill}"')
-    if style.stroke:
-        attrs.append(f'Stroke="{style.stroke}" StrokeThickness="{fmt(style.width, 6)}"')
-        if style.start_cap != "Flat":
-            attrs.append(f'StrokeStartLineCap="{style.start_cap}"')
-        if style.end_cap != "Flat":
-            attrs.append(f'StrokeEndLineCap="{style.end_cap}"')
-        if style.join != "Miter":
-            attrs.append(f'StrokeLineJoin="{style.join}"')
-        elif style.miter_limit != 10:
-            attrs.append(f'StrokeMiterLimit="{fmt(style.miter_limit)}"')
-        if style.dashes:
-            if style.dash_cap != "Flat":
-                attrs.append(f'StrokeDashCap="{style.dash_cap}"')
-            # XPS dash lengths are multiples of the stroke thickness.
-            dashes = list(style.dashes)
-            if len(dashes) % 2:
-                dashes *= 2  # XPS needs dash/gap pairs; PDF repeats odd lists
-            rel = " ".join(fmt(v / style.width, 6) for v in dashes)
-            attrs.append(f'StrokeDashArray="{rel}"')
-            if style.dash_offset:
-                attrs.append(f'StrokeDashOffset="{fmt(style.dash_offset / style.width, 6)}"')
+def _stroke_attrs(style: Style) -> str:
+    attrs = [f'Stroke="{style.stroke}" StrokeThickness="{fmt(style.width, 1)}"']
+    if style.start_cap != "Flat":
+        attrs.append(f'StrokeStartLineCap="{style.start_cap}"')
+    if style.end_cap != "Flat":
+        attrs.append(f'StrokeEndLineCap="{style.end_cap}"')
+    if style.join != "Miter":
+        attrs.append(f'StrokeLineJoin="{style.join}"')
+    elif style.miter_limit != 10:
+        attrs.append(f'StrokeMiterLimit="{fmt(style.miter_limit)}"')
+    if style.dashes and style.width > 0:
+        if style.dash_cap != "Flat":
+            attrs.append(f'StrokeDashCap="{style.dash_cap}"')
+        # XPS dash lengths are multiples of the stroke thickness.
+        dashes = list(style.dashes)
+        if len(dashes) % 2:
+            dashes *= 2  # XPS needs dash/gap pairs; PDF repeats odd lists
+        attrs.append(f'StrokeDashArray="{" ".join(fmt(v / style.width, 6) for v in dashes)}"')
+        if style.dash_offset:
+            attrs.append(f'StrokeDashOffset="{fmt(style.dash_offset / style.width, 6)}"')
     return " ".join(attrs)
 
 
-def _geometry(data: str, even_odd: bool) -> str:
-    # XPS defaults to even-odd filling, PDF to non-zero: "F1" selects non-zero.
-    return data if even_odd else "F1 " + data
+def shape_name(index: int) -> str:
+    return f"{NAME_PREFIX}{index}"
 
 
-# Note on file size: every PDF path becomes its own <Path>. Merging
-# identical-looking paths into one would make files smaller, but it changes
-# the picture: CAD PDFs often draw the same thin line several times, and
-# viewers darken such repeated lines (anti-aliasing), while a merged path
-# is drawn once. Tested on a real drawing: merging made 0.3 % of pixels
-# differ, not merging 0 %. Accuracy first; revisit in the file-size milestone.
-
-
-def _path(data: str, style: Style, transform: Matrix | None) -> str:
-    rt = f' RenderTransform="{_matrix(transform)}"' if transform else ""
-    return f'<Path Data="{_geometry(data, style.even_odd)}" {_style_attrs(style)}{rt}/>'
-
-
-def _image(shape: ImageShape, uri: str, width: int, height: int) -> str:
-    # A unit square, mapped onto the sheet by the image's transform and
-    # filled with the whole picture.
-    opacity = f' Opacity="{fmt(shape.opacity)}"' if shape.opacity < 1 else ""
-    return (
-        f'<Path Data="M0,0L1,0L1,1L0,1Z" RenderTransform="{_matrix(shape.transform)}"{opacity}>'
-        f'<Path.Fill><ImageBrush ImageSource="{uri}" Viewbox="0,0,{width},{height}" '
-        'ViewboxUnits="Absolute" Viewport="0,0,1,1" ViewportUnits="Absolute"/></Path.Fill></Path>'
-    )
-
-
-class _Writer:
-    def __init__(self, sheet: Sheet, image_uris: Mapping[str, str]) -> None:
-        self.sheet = sheet
-        self.image_uris = image_uris
-
-    def children(self, children: list, out: list[str]) -> None:
-        for child in children:
-            if isinstance(child, PathShape):
-                out.append(_path(child.data, child.style, child.transform))
-            elif isinstance(child, ImageShape):
-                img = self.sheet.images[child.image]
-                out.append(_image(child, self.image_uris[child.image], img.width, img.height))
-            else:
-                self.group(child, out)
-
-    def group(self, group: Group, out: list[str]) -> None:
-        attrs = ""
-        if group.clip:
-            attrs += f' Clip="{_geometry(group.clip, group.clip_even_odd)}"'
-        if group.opacity < 1:
-            attrs += f' Opacity="{fmt(group.opacity)}"'
-        if group.offsets is None:
-            out.append(f"<Canvas{attrs}>")
-            self.children(group.children, out)
-            out.append("</Canvas>")
-            return
-        # Repeated pattern tile: write its content once, then place copies.
-        inner: list[str] = []
-        self.children(group.children, inner)
-        content = "".join(inner)
-        out.append(f"<Canvas{attrs}>")
-        for dx, dy in group.offsets:
-            out.append(f'<Canvas RenderTransform="1,0,0,1,{fmt(dx)},{fmt(dy)}">{content}</Canvas>')
-        out.append("</Canvas>")
-
-
-def fixed_page(sheet: Sheet, canvas_name: str, image_uris: Mapping[str, str]) -> bytes:
+def fixed_page(prepared: Prepared, canvas_name: str) -> bytes:
     """Build the FixedPage XML.
 
     The outer canvas carries ``canvas_name``: the DWF sheet description
     points at it (``FixedPage.fpage?<canvas_name>``), exactly as AutoCAD's
-    DWFx files do. Its transform converts our point coordinates into XPS
-    units. ``image_uris`` gives the package location of each image.
+    DWFx files do. Its transform converts grid units into XPS units.
 
     Autodesk viewers cut the *contents* of that named canvas out of the page
     and parse them as a stand-alone XML document (see the DWF Toolkit's
     FixedPageResourceExtractor). A stand-alone document needs exactly one
     root element that declares the XPS namespace, so -- like AutoCAD --
     everything goes inside a single inner canvas with its own ``xmlns``.
-    Without it Design Review reports "There was a problem displaying the
-    page", while other XPS viewers show the page fine.
     """
-    k = fmt(PT_TO_XPS, 10)
+    k = fmt(UNITS_TO_XPS, 12)
+    w = fmt(prepared.width_units * UNITS_TO_XPS, 6)
+    h = fmt(prepared.height_units * UNITS_TO_XPS, 6)
     out: list[str] = [
         '<?xml version="1.0" encoding="utf-8"?>',
-        f'<FixedPage xmlns="{XPS_NS}" Width="{fmt(sheet.width_pt * PT_TO_XPS, 6)}" '
-        f'Height="{fmt(sheet.height_pt * PT_TO_XPS, 6)}" xml:lang="und">',
+        f'<FixedPage xmlns="{XPS_NS}" Width="{w}" Height="{h}" xml:lang="und">',
         f'<Canvas Name="{canvas_name}" RenderTransform="{k},0,0,{k},0,0">',
         f'<Canvas xmlns="{XPS_NS}">',
     ]
-    _Writer(sheet, image_uris).children(sheet.root.children, out)
+    for index, prim in enumerate(prepared.prims, start=1):
+        if prim.kind == "fill":
+            paint = f'Fill="{prim.style.fill}"'
+        else:
+            paint = _stroke_attrs(prim.style)
+        out.append(f'<Path Name="{shape_name(index)}" {paint} Data="{_data(prim)}"/>')
     out.append("</Canvas></Canvas></FixedPage>")
     return "".join(out).encode("utf-8")

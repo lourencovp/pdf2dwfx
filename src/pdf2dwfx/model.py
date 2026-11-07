@@ -36,15 +36,18 @@ class Style:
     even_odd: bool = False  # fill rule; False = non-zero (PDF default)
 
 
+# Path geometry: a list of steps in sheet coordinates (points):
+#   ("M", x, y)                      move to
+#   ("L", x, y)                      straight line to
+#   ("C", x1, y1, x2, y2, x3, y3)    Bézier curve to
+#   ("Z",)                           close the current outline
+PathOps = list[tuple]
+
+
 @dataclass
 class PathShape:
-    data: str  # geometry in XPS path mini-language, without fill-rule prefix
+    ops: PathOps
     style: Style
-    # Normally None: geometry is already in sheet coordinates. Set when a
-    # stroke is distorted (stretched in one direction); then the geometry
-    # stays in its own coordinates and the viewer applies this transform,
-    # so line thickness is distorted exactly as in the PDF.
-    transform: Matrix | None = None
     layer: str | None = None  # PDF layer (OCG) name, used from milestone 2
 
 
@@ -76,7 +79,8 @@ class Group:
     real geometry.
     """
 
-    clip: str | None = None  # clip geometry (XPS mini-language), None = no clip
+    # Clip outline; None = no clip, [] = empty clip (hides everything inside).
+    clip: PathOps | None = None
     clip_even_odd: bool = False
     opacity: float = 1.0
     offsets: list[tuple[float, float]] | None = None

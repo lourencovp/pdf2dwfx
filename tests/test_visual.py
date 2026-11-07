@@ -4,6 +4,10 @@ MuPDF (inside PyMuPDF) can also display XPS, and a DWFx is an XPS package.
 So we render the original PDF page and our DWFx sheet to pictures and count
 pixels that differ clearly. This catches misplaced, missing, mirrored or
 wrongly scaled geometry without needing Design Review.
+
+This is a fair preview of Design Review only because our pages use nothing
+that Autodesk's translator ignores (test_dwfx_package checks that): no
+curves, no clipping, no group transparency.
 """
 
 from pathlib import Path
@@ -35,6 +39,19 @@ def _difference(pdf: Path, dwfx: Path) -> float:
     return different / (w * h)
 
 
+def without_text_and_pictures(pdf: Path, out: Path) -> Path:
+    """The PDF with text and pictures removed: those are not converted yet
+    (text: milestone 3; pictures: next step)."""
+    doc = pymupdf.open(pdf)
+    for page in doc:
+        page.add_redact_annot(page.rect)
+        page.apply_redactions(
+            images=pymupdf.PDF_REDACT_IMAGE_REMOVE, graphics=pymupdf.PDF_REDACT_LINE_ART_NONE
+        )
+    doc.save(out)
+    return out
+
+
 @pytest.mark.parametrize(
     "options",
     [
@@ -57,34 +74,32 @@ def test_dwfx_looks_like_pdf(tmp_path: Path, options: dict) -> None:
 
 @pytest.mark.parametrize("dpi", [50, 150])
 def test_special_features_look_like_pdf(tmp_path: Path, dpi: int, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Images (JPEG, transparent, rotated, mirrored, stencil), pattern
-    fills, gradients, transparency, stretched strokes, caps and dashes."""
+    """Pattern fills, transparency, caps, joins, dashes, hairline, CMYK."""
     monkeypatch.setattr(__import__(__name__), "DPI", dpi)
-    pdf = features_pdf(tmp_path / "in.pdf")
+    pdf = features_pdf(tmp_path / "in.pdf", pictures=False, stretched=False)
     dwfx = tmp_path / "out.dwfx"
     assert convert(pdf, dwfx) == []  # nothing reported as unsupported
     assert _difference(pdf, dwfx) < MAX_DIFFERENT
 
 
-def _without_text(pdf: Path) -> pymupdf.Document:
-    """The PDF with its text removed (text is converted in milestone 3)."""
-    doc = pymupdf.open(pdf)
-    for page in doc:
-        page.add_redact_annot(page.rect)
-        page.apply_redactions(
-            images=pymupdf.PDF_REDACT_IMAGE_NONE, graphics=pymupdf.PDF_REDACT_LINE_ART_NONE
-        )
-    return doc
+def test_stretched_line_is_reported(tmp_path: Path) -> None:
+    pdf = features_pdf(tmp_path / "in.pdf", pictures=False, stretched=True)
+    warnings = convert(pdf, tmp_path / "out.dwfx")
+    assert warnings == ["unevenly stretched line thickness (approximated) (1x)"]
+
+
+def test_pictures_are_reported(tmp_path: Path) -> None:
+    pdf = features_pdf(tmp_path / "in.pdf", pictures=True, stretched=False)
+    assert convert(pdf, tmp_path / "out.dwfx") == ["pictures (7x)"]
 
 
 def test_private_sample_looks_like_pdf(tmp_path: Path, private_tests_dir: Path) -> None:
     """Real drawing (only on the owner's machine): everything except text
-    must match the PDF exactly."""
+    and pictures must match the PDF exactly."""
     pdf = private_tests_dir / "pdf" / "singlepdfpage.pdf"
     if not pdf.exists():
         pytest.skip("singlepdfpage.pdf not present")
     dwfx = tmp_path / "out.dwfx"
-    assert convert(pdf, dwfx) == ["text (155x)"]
-    no_text = tmp_path / "no_text.pdf"
-    _without_text(pdf).save(no_text)
-    assert _difference(no_text, dwfx) < 0.0005
+    assert convert(pdf, dwfx) == ["pictures (1x)", "text (155x)"]
+    reference = without_text_and_pictures(pdf, tmp_path / "reference.pdf")
+    assert _difference(reference, dwfx) < 0.0005

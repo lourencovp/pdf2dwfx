@@ -21,7 +21,6 @@ import pymupdf
 from pymupdf import mupdf
 
 from .model import (
-    IDENTITY,
     Group,
     ImageData,
     ImageShape,
@@ -118,27 +117,26 @@ def _walk(path: Any) -> list[tuple]:
     return walker.ops
 
 
-def geometry(ops: list[tuple], m: Matrix | None) -> str:
-    """Path segments to XPS geometry text, transformed by ``m`` if given."""
-    if m is None:
-        a, b, c, d, e, f = IDENTITY
-    else:
-        a, b, c, d, e, f = m
-    parts: list[str] = []
+def transform_ops(ops: list[tuple], m: Matrix) -> list[tuple]:
+    """Path segments with every point moved by the transform ``m``."""
+    a, b, c, d, e, f = m
+    out: list[tuple] = []
     for op in ops:
-        kind = op[0]
-        if kind == "Z":
-            parts.append("Z")
+        if op[0] == "Z":
+            out.append(op)
             continue
-        coords = []
+        pts: list[float] = []
         for i in range(1, len(op), 2):
             x, y = op[i], op[i + 1]
-            coords.append(f"{fmt(a * x + c * y + e)},{fmt(b * x + d * y + f)}")
-        parts.append(kind + " ".join(coords))
-    # A path that is only a "move to" draws nothing.
-    if all(p[0] in "MZ" for p in parts):
-        return ""
-    return "".join(parts)
+            pts.append(a * x + c * y + e)
+            pts.append(b * x + d * y + f)
+        out.append((op[0], *pts))
+    return out
+
+
+def draws_something(ops: list[tuple]) -> bool:
+    """A path made only of "move to" steps draws nothing."""
+    return any(op[0] in "LC" for op in ops)
 
 
 # --- Colours -------------------------------------------------------------------
@@ -387,25 +385,25 @@ class _Recorder(mupdf.FzDevice2):
     # -- paths --
 
     def fill_path(self, ctx: Any, path: Any, even_odd: int, ctm: Any, cs: Any, color: Any, alpha: float, cp: Any) -> None:
-        data = geometry(_walk(path), self._sheet_matrix(ctm))
-        if data:
+        ops = transform_ops(_walk(path), self._sheet_matrix(ctm))
+        if draws_something(ops):
             style = Style(fill=self.colors.xps(cs, color, alpha), even_odd=bool(even_odd))
-            self._add(PathShape(data, style, layer=self.layer))
+            self._add(PathShape(ops, style, layer=self.layer))
 
     def stroke_path(self, ctx: Any, path: Any, stroke: Any, ctm: Any, cs: Any, color: Any, alpha: float, cp: Any) -> None:
         m = self._sheet_matrix(ctm)
-        ops = _walk(path)
-        if _is_uniform(m):
-            # Usual case: put geometry in sheet coordinates, scale the width.
-            factor, transform, data = _scale(m), None, geometry(ops, m)
-        else:
-            # Stretched stroke: let the viewer apply the same distortion.
-            factor, transform, data = 1.0, m, geometry(ops, None)
-        if not data:
+        ops = transform_ops(_walk(path), m)
+        if not draws_something(ops):
             return
+        # Line thickness is scaled with the drawing. Autodesk's format has
+        # no way to stretch a line's thickness unevenly, so for a stretched
+        # drawing (rare) we use the average scale and report it.
+        factor = _scale(m)
+        if not _is_uniform(m):
+            self._note("unevenly stretched line thickness (approximated)")
         width = stroke.linewidth * factor
         if width <= 0:
-            width = HAIRLINE_PT if transform is None else HAIRLINE_PT / max(_scale(m), 1e-12)
+            width = HAIRLINE_PT
         dashes = tuple(
             mupdf.floats_getitem(stroke.dash_list, i) * factor for i in range(stroke.dash_len)
         )
@@ -422,14 +420,14 @@ class _Recorder(mupdf.FzDevice2):
             dashes=dashes,
             dash_offset=stroke.dash_phase * factor if dashes else 0.0,
         )
-        self._add(PathShape(data, style, transform, self.layer))
+        self._add(PathShape(ops, style, self.layer))
 
     # -- clipping --
 
     def clip_path(self, ctx: Any, path: Any, even_odd: int, ctm: Any, scissor: Any) -> None:
-        data = geometry(_walk(path), self._sheet_matrix(ctm))
-        # An empty clip region hides everything inside it.
-        group = Group(clip=data or "M0,0Z", clip_even_odd=bool(even_odd))
+        ops = transform_ops(_walk(path), self._sheet_matrix(ctm))
+        # An empty clip region (no drawing steps) hides everything inside it.
+        group = Group(clip=ops if draws_something(ops) else [], clip_even_odd=bool(even_odd))
         # Remember the clip's bounding box (MuPDF's "scissor"), so gradient
         # pictures only need to cover the visible part.
         e, f = self.page_transform[4], self.page_transform[5]

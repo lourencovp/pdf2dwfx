@@ -127,6 +127,75 @@ def test_graphics_extract_as_standalone_xml(tmp_path: Path, make) -> None:
     assert root.tag == NS_XPS + "Canvas"
 
 
+def _part(z: zipfile.ZipFile, suffix: str) -> str:
+    return next(n for n in z.namelist() if n.endswith(suffix))
+
+
+def test_w2x_companion_is_linked(tmp_path: Path) -> None:
+    """Design Review refuses to show a sheet without its W2X companion
+    ("2d graphics extension"), linked the way AutoCAD links it."""
+    z = _convert(tmp_path)
+    w2x = "/" + _part(z, "W2X.xml")
+    root = ET.fromstring(z.read(w2x.lstrip("/")))
+    assert root.tag == "W2X" and root.get("NamePrefix")
+    # manifest lists it
+    manifest = ET.fromstring(z.read(_part(z, "manifest.xml")))
+    roles = {r.get("href"): r.get("role") for r in manifest.iter("{DWF-Manifest:6.0}Resource")}
+    assert roles[w2x] == "2d graphics extension"
+    # descriptor lists it and ties it to the graphics
+    descriptor = ET.fromstring(z.read(_part(z, "descriptor.xml")))
+    resource = next(
+        r for r in descriptor.iter(NS_EPLOT + "Resource") if r.get("href") == w2x
+    )
+    link = descriptor.find(f".//{NS_EPLOT}GraphicResource/{NS_EPLOT}Relationships/{NS_EPLOT}Relationship")
+    assert link.get("objectId") == resource.get("objectId")
+    assert link.get("type").endswith("/graphics2dextensionresource")
+    # and the descriptor's .rels points at it
+    rels = _rels(z, _part(z, "_rels/descriptor.xml.rels"))
+    assert w2x in rels.values()
+
+
+@pytest.mark.parametrize("make", [drawing_pdf, features_pdf], ids=["drawing", "features"])
+def test_page_uses_only_what_autodesk_understands(tmp_path: Path, make) -> None:
+    """Autodesk's XAML translator (DWF Toolkit, XamlPathGeometry) reads only
+    straight-line path commands with whole-number coordinates, and ignores
+    clipping and group transparency. Anything else would be lost or garbled
+    in Design Review."""
+    convert(make(tmp_path / "in.pdf"), tmp_path / "out.dwfx")
+    z = zipfile.ZipFile(tmp_path / "out.dwfx")
+    page = ET.fromstring(z.read(_part(z, ".fpage")))
+    named = page.find(NS_XPS + "Canvas")
+    (inner,) = list(named)
+    names = []
+    for el in inner:
+        assert el.tag == NS_XPS + "Path"  # no nested canvases (clips, groups)
+        data = el.get("Data")
+        assert re.fullmatch(r"(M-?\d+,-?\d+ L(-?\d+,-?\d+ ?)+( Z)? ?)+", data), data[:80]
+        names.append(el.get("Name"))
+    # Shapes are numbered 1, 2, 3... so W2X entries can refer to them.
+    assert names == [f"N_{i}" for i in range(1, len(names) + 1)]
+
+
+def test_contour_sets_match_shapes(tmp_path: Path) -> None:
+    """A filled shape with several outlines (e.g. with a hole) needs a W2X
+    Contour_Set entry with the right counts, or holes come out filled."""
+    pdf = drawing_pdf(tmp_path / "in.pdf")  # contains a square with a hole
+    convert(pdf, tmp_path / "out.dwfx")
+    z = zipfile.ZipFile(tmp_path / "out.dwfx")
+    paths = {
+        el.get("Name"): el.get("Data")
+        for el in ET.fromstring(z.read(_part(z, ".fpage"))).iter(NS_XPS + "Path")
+    }
+    sets = list(ET.fromstring(z.read(_part(z, "W2X.xml"))).iter("Contour_Set"))
+    assert sets, "the square with a hole should produce a contour set"
+    for entry in sets:
+        data = paths[entry.get("refName")]
+        outlines = data.split("M")[1:]
+        assert int(entry.get("Contours")) == len(outlines)
+        points = sum(len(re.findall(r"-?\d+,-?\d+", o)) + 1 for o in outlines)
+        assert int(entry.get("Count")) == points
+
+
 def test_part_names_are_plain_ascii(tmp_path: Path) -> None:
     # OPC part names must be valid URIs; we only ever use safe characters.
     z = _convert(tmp_path)

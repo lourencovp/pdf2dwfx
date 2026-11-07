@@ -5,7 +5,16 @@ from pathlib import Path
 import pymupdf
 
 from pdf2dwfx.model import Group, ImageShape, PathShape
-from pdf2dwfx.pdf_reader import HAIRLINE_PT, _is_uniform, _jpeg_at_96dpi, concat, fmt, geometry, read_page
+from pdf2dwfx.pdf_reader import (
+    HAIRLINE_PT,
+    _is_uniform,
+    _jpeg_at_96dpi,
+    concat,
+    draws_something,
+    fmt,
+    read_page,
+    transform_ops,
+)
 from synthetic import features_pdf
 
 
@@ -16,19 +25,17 @@ def test_fmt_is_compact() -> None:
     assert fmt(1 / 3, 6) == "0.333333"
 
 
-def test_geometry_untransformed() -> None:
-    ops = [("M", 0, 0), ("L", 10, 0), ("C", 1, 2, 3, 4, 5, 6), ("Z",)]
-    assert geometry(ops, None) == "M0,0L10,0C1,2 3,4 5,6Z"
-
-
-def test_geometry_transformed() -> None:
-    ops = [("M", 1, 1), ("L", 2, 1)]
+def test_transform_ops() -> None:
+    ops = [("M", 1, 1), ("L", 2, 1), ("C", 0, 0, 1, 1, 2, 2), ("Z",)]
     # scale 2 then shift by (10, 20)
-    assert geometry(ops, (2, 0, 0, 2, 10, 20)) == "M12,22L14,22"
+    assert transform_ops(ops, (2, 0, 0, 2, 10, 20)) == [
+        ("M", 12, 22), ("L", 14, 22), ("C", 10, 20, 12, 22, 14, 24), ("Z",),
+    ]
 
 
 def test_move_only_path_draws_nothing() -> None:
-    assert geometry([("M", 1, 1)], None) == ""
+    assert not draws_something([("M", 1, 1), ("Z",)])
+    assert draws_something([("M", 1, 1), ("L", 2, 2)])
 
 
 def test_concat_applies_first_matrix_first() -> None:
@@ -70,7 +77,8 @@ def test_features_are_read_in_drawing_order(tmp_path: Path) -> None:
     assert all(s.style.stroke == "#000000" for s in shapes[:8])
     after = shapes[first_image + 1]
     assert isinstance(after, PathShape) and after.style.stroke == "#FF0000"
-    assert not sheet.unsupported, sheet.unsupported
+    # The stretched line is the only thing that cannot be reproduced exactly.
+    assert set(sheet.unsupported) == {"unevenly stretched line thickness (approximated)"}
 
 
 def test_image_kinds(tmp_path: Path) -> None:
