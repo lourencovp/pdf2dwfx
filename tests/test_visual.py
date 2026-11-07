@@ -39,14 +39,13 @@ def _difference(pdf: Path, dwfx: Path) -> float:
     return different / (w * h)
 
 
-def without_text_and_pictures(pdf: Path, out: Path) -> Path:
-    """The PDF with text and pictures removed: those are not converted yet
-    (text: milestone 3; pictures: next step)."""
+def without_text(pdf: Path, out: Path) -> Path:
+    """The PDF with its text removed (text is converted in milestone 3)."""
     doc = pymupdf.open(pdf)
     for page in doc:
         page.add_redact_annot(page.rect)
         page.apply_redactions(
-            images=pymupdf.PDF_REDACT_IMAGE_REMOVE, graphics=pymupdf.PDF_REDACT_LINE_ART_NONE
+            images=pymupdf.PDF_REDACT_IMAGE_NONE, graphics=pymupdf.PDF_REDACT_LINE_ART_NONE
         )
     doc.save(out)
     return out
@@ -74,9 +73,10 @@ def test_dwfx_looks_like_pdf(tmp_path: Path, options: dict) -> None:
 
 @pytest.mark.parametrize("dpi", [50, 150])
 def test_special_features_look_like_pdf(tmp_path: Path, dpi: int, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pattern fills, transparency, caps, joins, dashes, hairline, CMYK."""
+    """Pictures (JPEG, transparent, rotated, mirrored, stencil, gradient),
+    pattern fills, transparency, caps, joins, dashes, hairline, CMYK."""
     monkeypatch.setattr(__import__(__name__), "DPI", dpi)
-    pdf = features_pdf(tmp_path / "in.pdf", pictures=False, stretched=False)
+    pdf = features_pdf(tmp_path / "in.pdf", stretched=False)
     dwfx = tmp_path / "out.dwfx"
     assert convert(pdf, dwfx) == []  # nothing reported as unsupported
     assert _difference(pdf, dwfx) < MAX_DIFFERENT
@@ -88,18 +88,13 @@ def test_stretched_line_is_reported(tmp_path: Path) -> None:
     assert warnings == ["unevenly stretched line thickness (approximated) (1x)"]
 
 
-def test_pictures_are_reported(tmp_path: Path) -> None:
-    pdf = features_pdf(tmp_path / "in.pdf", pictures=True, stretched=False)
-    assert convert(pdf, tmp_path / "out.dwfx") == ["pictures (7x)"]
-
-
 def test_private_sample_looks_like_pdf(tmp_path: Path, private_tests_dir: Path) -> None:
     """Real drawing (only on the owner's machine): everything except text
-    and pictures must match the PDF exactly."""
+    must match the PDF exactly."""
     pdf = private_tests_dir / "pdf" / "singlepdfpage.pdf"
     if not pdf.exists():
         pytest.skip("singlepdfpage.pdf not present")
     dwfx = tmp_path / "out.dwfx"
-    assert convert(pdf, dwfx) == ["pictures (1x)", "text (155x)"]
-    reference = without_text_and_pictures(pdf, tmp_path / "reference.pdf")
+    assert convert(pdf, dwfx) == ["text (155x)"]
+    reference = without_text(pdf, tmp_path / "reference.pdf")
     assert _difference(reference, dwfx) < 0.0005

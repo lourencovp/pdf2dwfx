@@ -67,7 +67,43 @@ def shape_name(index: int) -> str:
     return f"{NAME_PREFIX}{index}"
 
 
-def fixed_page(prepared: Prepared, canvas_name: str) -> bytes:
+def brush_key(index: int) -> str:
+    """Name of the picture brush used by shape number ``index``."""
+    return f"R{index}"
+
+
+def resource_dictionary(prepared: Prepared, sources: dict[str, str]) -> bytes | None:
+    """The separate list of picture brushes, or None if there are no pictures.
+
+    Autodesk's translator rejects a picture brush written inside a shape
+    (it treats it as a corrupted file); like AutoCAD, each brush lives in
+    this list and the shape refers to it by key. ``sources`` maps picture
+    keys to their location relative to the page ("./name.png").
+    """
+    brushes = []
+    for index, prim in enumerate(prepared.prims, start=1):
+        if prim.image is None:
+            continue
+        img = prim.image.data
+        x0, y0, x1, y1 = prim.image.box
+        sx, sy = (x1 - x0) / img.width, (y1 - y0) / img.height
+        brushes.append(
+            f'<ImageBrush x:Key="{brush_key(index)}" ImageSource="{sources[prim.image.key]}" '
+            f'Transform="{fmt(sx, 9)},0,0,{fmt(sy, 9)},{x0},{y0}" '
+            f'Viewbox="0,0,{img.width},{img.height}" Viewport="0,0,{img.width},{img.height}" '
+            'ViewboxUnits="Absolute" ViewportUnits="Absolute" TileMode="None"/>'
+        )
+    if not brushes:
+        return None
+    return (
+        f'<ResourceDictionary xmlns="{XPS_NS}" '
+        'xmlns:x="http://schemas.microsoft.com/xps/2005/06/resourcedictionary-key">'
+        + "".join(brushes)
+        + "</ResourceDictionary>"
+    ).encode("utf-8")
+
+
+def fixed_page(prepared: Prepared, canvas_name: str, dictionary_source: str | None = None) -> bytes:
     """Build the FixedPage XML.
 
     The outer canvas carries ``canvas_name``: the DWF sheet description
@@ -79,6 +115,8 @@ def fixed_page(prepared: Prepared, canvas_name: str) -> bytes:
     FixedPageResourceExtractor). A stand-alone document needs exactly one
     root element that declares the XPS namespace, so -- like AutoCAD --
     everything goes inside a single inner canvas with its own ``xmlns``.
+
+    ``dictionary_source``: location of the picture brush list, if any.
     """
     k = fmt(UNITS_TO_XPS, 12)
     w = fmt(prepared.width_units * UNITS_TO_XPS, 6)
@@ -89,9 +127,13 @@ def fixed_page(prepared: Prepared, canvas_name: str) -> bytes:
         f'<Canvas Name="{canvas_name}" RenderTransform="{k},0,0,{k},0,0">',
         f'<Canvas xmlns="{XPS_NS}">',
     ]
+    if dictionary_source:
+        out.append(f'<Canvas.Resources><ResourceDictionary Source="{dictionary_source}"/></Canvas.Resources>')
     for index, prim in enumerate(prepared.prims, start=1):
         if prim.kind == "fill":
             paint = f'Fill="{prim.style.fill}"'
+        elif prim.kind == "image":
+            paint = f'Fill="{{StaticResource {brush_key(index)}}}"'
         else:
             paint = _stroke_attrs(prim.style)
         out.append(f'<Path Name="{shape_name(index)}" {paint} Data="{_data(prim)}"/>')

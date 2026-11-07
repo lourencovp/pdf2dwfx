@@ -16,6 +16,7 @@ constants in the Autodesk DWF Toolkit source (read only, nothing copied).
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass, field
 import zipfile
 from collections.abc import Sequence
 from pathlib import Path
@@ -26,7 +27,7 @@ from .model import Sheet
 from .pdf_reader import fmt
 from .prepare import UNITS_PER_MM, Prepared, prepare
 from .w2x import w2x
-from .xps import UNITS_TO_XPS, fixed_page
+from .xps import UNITS_TO_XPS, fixed_page, resource_dictionary
 
 # --- Relationship types -----------------------------------------------------
 REL_CORE_PROPS = "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties"
@@ -37,6 +38,9 @@ REL_DWF_PROPERTIES = "http://schemas.autodesk.com/dwfx/2007/relationships/dwfpro
 REL_DWF_SECTION = "http://schemas.autodesk.com/dwfx/2007/relationships/section"
 REL_DWF_REQUIRED = "http://schemas.autodesk.com/dwfx/2007/relationships/requiredresource"
 REL_DWF_W2X = "http://schemas.autodesk.com/dwfx/2007/relationships/graphics2dextensionresource"
+REL_DWF_DICTIONARY = "http://schemas.autodesk.com/dwfx/2007/relationships/graphics2ddictionaryresource"
+REL_DWF_RASTER = "http://schemas.autodesk.com/dwfx/2007/relationships/rasterreferenceresource"
+REL_XPS_REQUIRED = "http://schemas.microsoft.com/xps/2005/06/required-resource"
 
 # --- Content (MIME) types ---------------------------------------------------
 DEFAULT_TYPES = {
@@ -50,6 +54,8 @@ DEFAULT_TYPES = {
     "jpg": "image/jpeg",
 }
 CORE_PROPS_TYPE = "application/vnd.openxmlformats-package.core-properties+xml"
+DICTIONARY_TYPE = "application/vnd.ms-package.xps-resourcedictionary+xml"
+IMAGE_MIME = {"png": "image/png", "jpg": "image/jpeg"}
 # How the DWF manifest labels the XPS page that carries a sheet's graphics.
 FIXEDPAGE_DWF_MIME = "application/vnd.adsk-package.dwfx-fixedpage+xml"
 
@@ -95,25 +101,41 @@ def _matrix_4x4() -> str:
     return " ".join(fmt(v, 12) for v in values)
 
 
-def _descriptor(sheet: Sheet, order: int, fpage_part: str, w2x_part: str, w2x_size: int) -> bytes:
+@dataclass
+class _Resource:
+    """A file belonging to a sheet besides its page (W2X, pictures...)."""
+
+    part: str
+    role: str  # DWF role name, e.g. "2d graphics extension"
+    mime: str
+    relationship: str  # how the sheet's graphics refer to it
+    element: str = "Resource"  # "ImageResource" for pictures
+    object_id: str = field(default_factory=lambda: _guid())
+
+
+def _descriptor(sheet: Sheet, order: int, fpage_part: str, resources: list[_Resource]) -> bytes:
     """The DWF sheet description: name, paper size and graphics resources.
 
-    Like AutoCAD, the W2X companion is listed as the "2d graphics
-    extension" and tied to the graphics through ePlot:Relationships."""
+    Like AutoCAD, every extra file (W2X companion, picture brush list,
+    pictures) is listed as a resource and tied to the graphics through
+    ePlot:Relationships."""
     w, h = fmt(sheet.width_mm, 6), fmt(sheet.height_mm, 6)
-    w2x_id = _guid()
+    listed = "".join(
+        f'<ePlot:{r.element} role="{r.role}" mime="{r.mime}" href="{r.part}" objectId="{r.object_id}"/>'
+        for r in resources
+    )
+    links = "".join(
+        f'<ePlot:Relationship objectId="{r.object_id}" type="{r.relationship}"/>' for r in resources
+    )
     return (
         f'<ePlot:Page xmlns:ePlot="DWF-ePlot:1.2" version="1.2" objectId="{_guid()}" '
         f'name={quoteattr(sheet.title)} plotOrder="{order}" color="128 128 128">'
         f'<ePlot:Paper units="mm" width="{w}" height="{h}" color="255 255 255" clip="0 0 {w} {h}"/>'
-        "<ePlot:Resources>"
-        f'<ePlot:Resource role="2d graphics extension" mime="text/xml" href="{w2x_part}" '
-        f'title="W2X Resource" size="{w2x_size}" internalId="dwfresource_2" objectId="{w2x_id}"/>'
+        f"<ePlot:Resources>{listed}"
         f'<ePlot:GraphicResource role="2d streaming graphics" mime="{FIXEDPAGE_DWF_MIME}" '
         f'href="{fpage_part}?{GRAPHICS_ID}" internalId="{GRAPHICS_ID}" objectId="{_guid()}" '
         f'transform="{_matrix_4x4()}">'
-        f'<ePlot:Relationships><ePlot:Relationship objectId="{w2x_id}" type="{REL_DWF_W2X}"/>'
-        "</ePlot:Relationships></ePlot:GraphicResource>"
+        f"<ePlot:Relationships>{links}</ePlot:Relationships></ePlot:GraphicResource>"
         "</ePlot:Resources></ePlot:Page>"
     ).encode("utf-8")
 
@@ -125,8 +147,9 @@ def build_parts(sheets: Sequence[Sheet]) -> dict[str, bytes]:
     doc = f"/dwf/documents/{_guid()}"
     parts: dict[str, bytes] = {}
 
-    # (name, descriptor, fpage, w2x, sheet, prepared)
-    sections: list[tuple[str, str, str, str, Sheet, Prepared]] = []
+    overrides: dict[str, str] = {"/CoreProperties.xml": CORE_PROPS_TYPE}
+    # (name, descriptor, fpage, resources, sheet, prepared)
+    sections: list[tuple[str, str, str, list[_Resource], Sheet, Prepared]] = []
     for order, sheet in enumerate(sheets, start=1):
         name = f"com.autodesk.dwf.ePlot_{_guid()}"
         folder = f"{doc}/sections/{name}"
@@ -134,13 +157,37 @@ def build_parts(sheets: Sequence[Sheet]) -> dict[str, bytes]:
         fpage = f"{folder}/FixedPage.fpage"
         w2x_part = f"{folder}/W2X.xml"
         prepared = prepare(sheet)
-        parts[fpage] = fixed_page(prepared, GRAPHICS_ID)
-        parts[w2x_part] = w2x(prepared)
-        parts[descriptor] = _descriptor(sheet, order, fpage, w2x_part, len(parts[w2x_part]))
+
+        # Pictures: each distinct picture stored once, next to the page.
+        sources: dict[str, str] = {}  # picture key -> "./file" (relative to the page)
+        image_parts: list[tuple[str, str]] = []  # (part, ext)
+        for prim in prepared.prims:
+            if prim.image is not None and prim.image.key not in sources:
+                file = f"{_guid()}.{prim.image.data.ext}"
+                parts[f"{folder}/{file}"] = prim.image.data.data
+                sources[prim.image.key] = f"./{file}"
+                image_parts.append((f"{folder}/{file}", prim.image.data.ext))
+        dictionary = resource_dictionary(prepared, sources)
+        dictionary_part = f"{folder}/Dictionary.xml" if dictionary else None
+
+        parts[fpage] = fixed_page(prepared, GRAPHICS_ID, "./Dictionary.xml" if dictionary else None)
+        parts[w2x_part] = w2x(prepared, sources)
+        resources = [_Resource(w2x_part, "2d graphics extension", "text/xml", REL_DWF_W2X)]
+        if dictionary_part:
+            parts[dictionary_part] = dictionary  # type: ignore[assignment]
+            overrides[dictionary_part] = DICTIONARY_TYPE
+            resources.append(_Resource(dictionary_part, "2d graphics dictionary", DICTIONARY_TYPE, REL_DWF_DICTIONARY))
+            # XPS: the page needs its brush list and pictures as resources.
+            parts[_rels_path(fpage)] = _relationships(
+                [(dictionary_part, REL_XPS_REQUIRED)] + [(part, REL_XPS_REQUIRED) for part, _ in image_parts]
+            )
+        for part, ext in image_parts:
+            resources.append(_Resource(part, "raster reference", IMAGE_MIME[ext], REL_DWF_RASTER, "ImageResource"))
+        parts[descriptor] = _descriptor(sheet, order, fpage, resources)
         parts[_rels_path(descriptor)] = _relationships(
-            [(w2x_part, REL_DWF_REQUIRED), (w2x_part, REL_DWF_W2X)]
+            [rel for r in resources for rel in ((r.part, REL_DWF_REQUIRED), (r.part, r.relationship))]
         )
-        sections.append((name, descriptor, fpage, w2x_part, sheet, prepared))
+        sections.append((name, descriptor, fpage, resources, sheet, prepared))
 
     # --- XPS side: sequence -> document -> pages ---
     fdoc = f"{doc}/FixedDocument.fdoc"
@@ -166,10 +213,10 @@ def build_parts(sheets: Sequence[Sheet]) -> dict[str, bytes]:
         '<dwf:Source provider="pdf2dwfx"/><dwf:Toc>'
         f'<dwf:Resource role="2d streaming graphics" mime="{FIXEDPAGE_DWF_MIME}" '
         f'href="{fpage}?{GRAPHICS_ID}"/>'
-        f'<dwf:Resource role="2d graphics extension" mime="text/xml" href="{w2x_part}"/>'
-        f'<dwf:Resource role="descriptor" mime="text/xml" href="{descriptor}"/>'
+        + "".join(f'<dwf:Resource role="{r.role}" mime="{r.mime}" href="{r.part}"/>' for r in res)
+        + f'<dwf:Resource role="descriptor" mime="text/xml" href="{descriptor}"/>'
         "</dwf:Toc></dwf:Section>"
-        for name, descriptor, fpage, w2x_part, s, _ in sections
+        for name, descriptor, fpage, res, s, _ in sections
     )
     parts[manifest] = (
         f'<dwf:Manifest xmlns:dwf="DWF-Manifest:6.0" version="6.0" objectId="{_guid()}">'
@@ -216,8 +263,9 @@ def build_parts(sheets: Sequence[Sheet]) -> dict[str, bytes]:
     )
     parts["/[Content_Types].xml"] = (
         f'{XML_DECL}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-        f'{defaults}<Override PartName="/CoreProperties.xml" ContentType="{CORE_PROPS_TYPE}"/>'
-        "</Types>"
+        f"{defaults}"
+        + "".join(f'<Override PartName="{part}" ContentType="{ctype}"/>' for part, ctype in overrides.items())
+        + "</Types>"
     ).encode("utf-8")
     return parts
 

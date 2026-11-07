@@ -2,7 +2,9 @@
 
 import math
 
-from pdf2dwfx.model import Group, PathShape, Sheet, Style
+import pymupdf
+
+from pdf2dwfx.model import Group, ImageData, ImageShape, PathShape, Sheet, Style
 from pdf2dwfx.prepare import CURVE_TOLERANCE, UNITS_PER_PT, prepare, to_contours
 
 STROKE = Style(stroke="#000000", width=1.0)
@@ -160,3 +162,42 @@ def test_pattern_copies_become_real_geometry() -> None:
 def test_widths_are_in_grid_units() -> None:
     (prim,) = prepare(_sheet(PathShape([("M", 0, 0), ("L", 10, 0)], STROKE))).prims
     assert prim.style.width == UNITS_PER_PT
+
+
+def _photo_sheet(transform, clip=None) -> Sheet:
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 40, 20), False)
+    pix.set_rect(pymupdf.IRect(0, 0, 20, 20), (255, 0, 0))
+    pix.set_rect(pymupdf.IRect(20, 0, 40, 20), (0, 0, 255))
+    data = ImageData(pix.tobytes("jpeg"), "jpg", 40, 20)
+    sheet = Sheet("t", 100, 100)
+    sheet.images["photo"] = data
+    shape = ImageShape("photo", transform)
+    sheet.root.children.append(Group(clip=clip, children=[shape]) if clip else shape)
+    return sheet
+
+
+def test_upright_jpeg_is_used_unchanged() -> None:
+    sheet = _photo_sheet((40, 0, 0, 20, 10, 10))
+    (prim,) = prepare(sheet).prims
+    assert prim.kind == "image"
+    assert prim.image.data is sheet.images["photo"]  # no re-encoding
+    assert prim.image.box == (u(10), u(10), u(50), u(30))
+
+
+def test_rotated_picture_is_redrawn_upright() -> None:
+    # Rotated 90 degrees: 40 x 20 becomes 20 wide x 40 tall.
+    (prim,) = prepare(_photo_sheet((0, 40, -20, 0, 30, 10))).prims
+    assert prim.image.data.ext == "png"
+    x0, y0, x1, y1 = prim.image.box
+    assert abs((x1 - x0) - u(20)) <= u(1) and abs((y1 - y0) - u(40)) <= u(1)
+    redrawn = pymupdf.Pixmap(prim.image.data.data)
+    # The original's left half (red) is now at the top.
+    top = redrawn.pixel(redrawn.width // 2, redrawn.height // 4)
+    assert top[0] > 200 and top[2] < 60
+
+
+def test_clipped_picture_is_trimmed() -> None:
+    (prim,) = prepare(_photo_sheet((40, 0, 0, 20, 10, 10), clip=_square(10, 10, 30, 30))).prims
+    assert prim.image.data.ext == "png"
+    x0, _, x1, _ = prim.image.box
+    assert abs((x1 - x0) - u(20)) <= u(1)  # only the visible part (the red half)

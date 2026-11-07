@@ -7,7 +7,6 @@ from pathlib import Path
 import pymupdf
 
 from .dwfx import write_dwfx
-from .model import Group, ImageShape
 from .pdf_reader import read_page, unsupported_summary
 
 
@@ -23,19 +22,4 @@ def convert(pdf_path: Path, dwfx_path: Path, page_number: int = 1) -> list[str]:
             )
         sheet = read_page(doc[page_number - 1])
     write_dwfx(dwfx_path, [sheet])
-    warnings = unsupported_summary(sheet)
-    pictures = _count_pictures(sheet.root)
-    if pictures:
-        # Pictures need their own entries in Autodesk's format; coming next.
-        warnings.append(f"pictures ({pictures}x)")
-    return sorted(warnings)
-
-
-def _count_pictures(group: Group) -> int:
-    count = 0
-    for child in group.children:
-        if isinstance(child, ImageShape):
-            count += 1
-        elif isinstance(child, Group):
-            count += _count_pictures(child) * len(child.offsets or [None])
-    return count
+    return unsupported_summary(sheet)

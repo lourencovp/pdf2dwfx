@@ -168,7 +168,14 @@ def test_page_uses_only_what_autodesk_understands(tmp_path: Path, make) -> None:
     (inner,) = list(named)
     names = []
     for el in inner:
+        if el.tag == NS_XPS + "Canvas.Resources":
+            continue  # the reference to the picture brush list
         assert el.tag == NS_XPS + "Path"  # no nested canvases (clips, groups)
+        fill = el.get("Fill") or ""
+        # Pictures only by reference to the brush list: a brush written
+        # inside the shape makes Autodesk's translator reject the file.
+        assert not list(el), "no child elements (e.g. inline ImageBrush)"
+        assert fill.startswith("#") or fill.startswith("{StaticResource ") or not fill
         data = el.get("Data")
         # Only "M" and "L": a "Z"/"z" (close) makes Design Review fail the
         # whole page (verified in Design Review).
@@ -202,6 +209,47 @@ def test_w2x_entries_for_fills_and_line_weights(tmp_path: Path) -> None:
         current = weights.get(p.get("Name"), current)
         if p.get("Stroke"):
             assert current == max(1, round(float(p.get("StrokeThickness")))), p.get("Name")
+
+
+def test_pictures_are_registered_like_autocad(tmp_path: Path) -> None:
+    """Each picture: a shape filled from the brush list, a W2X Image (JPEG,
+    format 8) or PNG_Group4_Image (PNG, format 12) entry with its box in
+    Autodesk's upward coordinates, and the package links AutoCAD writes."""
+    convert(features_pdf(tmp_path / "in.pdf", stretched=False), tmp_path / "out.dwfx")
+    z = zipfile.ZipFile(tmp_path / "out.dwfx")
+    names = set(z.namelist())
+    page = ET.fromstring(z.read(_part(z, ".fpage")))
+    dictionary = ET.fromstring(z.read(_part(z, "Dictionary.xml")))
+    w2x = ET.fromstring(z.read(_part(z, "W2X.xml")))
+    height = int(w2x.find("View").get("Area").split(",")[3])
+    key_ns = "{http://schemas.microsoft.com/xps/2005/06/resourcedictionary-key}Key"
+    brushes = {b.get(key_ns): b for b in dictionary.iter(NS_XPS + "ImageBrush")}
+    entries = {e.get("refName"): e for tag in ("Image", "PNG_Group4_Image") for e in w2x.iter(tag)}
+    pictures = [p for p in page.iter(NS_XPS + "Path") if (p.get("Fill") or "").startswith("{StaticResource")]
+    assert len(pictures) == 7
+    folder = _part(z, ".fpage").rpartition("/")[0]
+    for path in pictures:
+        brush = brushes[path.get("Fill")[len("{StaticResource ") : -1]]
+        entry = entries[path.get("Name")]
+        # same picture file in brush and W2X entry, and it exists
+        assert brush.get("ImageSource") == entry.get("Ref")
+        assert f"{folder}/{entry.get('Ref')[2:]}" in names
+        expected = ("8", ".jpg") if entry.tag == "Image" else ("12", ".png")
+        assert (entry.get("Format"), entry.get("Ref")[-4:]) == expected
+        # W2X box = page box with y flipped (y up from the bottom)
+        points = re.findall(r"-?\d+,-?\d+", path.get("Data"))
+        xs = [int(v.split(",")[0]) for v in points]
+        ys = [int(v.split(",")[1]) for v in points]
+        x0, y0, x1, y1 = (int(v) for v in entry.get("Area").split(","))
+        assert (x0, x1) == (min(xs), max(xs))
+        assert (y0, y1) == (height - max(ys), height - min(ys))
+    # package links
+    ct = z.read("[Content_Types].xml").decode()
+    assert "Dictionary.xml" in ct and "xps-resourcedictionary" in ct
+    page_rels = ET.fromstring(z.read(_part(z, "_rels/FixedPage.fpage.rels")))
+    targets = [r.get("Target") for r in page_rels.iter(NS_RELS + "Relationship")]
+    assert any(target.endswith("Dictionary.xml") for target in targets)
+    assert sum(target.endswith((".png", ".jpg")) for target in targets) == len(set(e.get("Ref") for e in entries.values()))
 
 
 def test_part_names_are_plain_ascii(tmp_path: Path) -> None:

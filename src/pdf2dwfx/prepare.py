@@ -19,12 +19,15 @@ pattern tiles into real geometry. The result looks the same in any viewer.
 
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import dataclass, field, replace
 
+import pymupdf
 import pyclipper
+from pymupdf import mupdf
 
-from .model import Group, ImageShape, PathOps, PathShape, Sheet, Style
+from .model import Group, ImageData, ImageShape, Matrix, PathOps, PathShape, Sheet, Style
 
 # The whole-number grid: 1 unit = 1 micrometre (0.001 mm). Far finer than
 # any printer or screen, and an A0 sheet (1189 mm) is only ~1.2 million
@@ -36,25 +39,40 @@ UNITS_PER_PT = UNITS_PER_MM * 25.4 / 72
 # true curve (in grid units, i.e. micrometres).
 CURVE_TOLERANCE = 2.0
 
+# Pictures that must be redrawn (rotated, clipped...) are limited to this
+# many pixels, and Autodesk's format allows at most 65535 per side.
+MAX_PICTURE_PIXELS = 16_000_000
+MAX_PICTURE_SIDE = 65535
+
 Point = tuple[int, int]
 Contour = list[Point]
+Box = tuple[int, int, int, int]  # x0, y0, x1, y1 in grid units (y down)
+
+
+@dataclass
+class PlacedImage:
+    """A picture ready for Autodesk's format: an upright box on the sheet."""
+
+    key: str  # identifies the picture data (same data -> stored once)
+    data: ImageData
+    box: Box
 
 
 @dataclass
 class Prim:
     """One shape ready for writing: whole-number outlines plus its style.
 
-    For fills, every contour is a closed outline and the outlines never
-    overlap (holes are separate outlines inside others), so the result is
-    the same whatever fill rule a viewer uses. For strokes, ``closed`` says
-    which outlines join back to their start.
+    For fills, there is exactly one closed outline without holes. For
+    strokes, ``closed`` says which outlines join back to their start.
+    For pictures, ``image`` holds the picture and ``contours`` its box.
     """
 
-    kind: str  # "fill" or "stroke"
+    kind: str  # "fill", "stroke" or "image"
     contours: list[Contour]
     closed: list[bool]
     style: Style  # widths and dash lengths in grid units
     layer: str | None = None
+    image: PlacedImage | None = None
 
 
 @dataclass
@@ -62,7 +80,6 @@ class Prepared:
     width_units: int
     height_units: int
     prims: list[Prim] = field(default_factory=list)
-    images: list[ImageShape] = field(default_factory=list)
 
 
 # --- Geometry helpers ------------------------------------------------------------
@@ -412,7 +429,7 @@ class _Preparer:
             if isinstance(child, PathShape):
                 self.shape(child, region, opacity, dx, dy)
             elif isinstance(child, ImageShape):
-                self.out.images.append(child)
+                self.image(child, region, opacity, dx, dy)
             else:
                 self.group(child, region, opacity, dx, dy)
 
@@ -425,6 +442,17 @@ class _Preparer:
             return  # everything inside an empty clip is hidden
         for ox, oy in group.offsets or [(0.0, 0.0)]:
             self.walk(group.children, region, opacity, dx + ox, dy + oy)
+
+    def image(self, shape: ImageShape, region: _ClipRegion | None, opacity: float, dx: float, dy: float) -> None:
+        a, b, c, d, e, f = shape.transform
+        m = (a, b, c, d, e + dx, f + dy)
+        placed = place_image(self.sheet.images[shape.image], shape.image, m, region, opacity * shape.opacity)
+        if placed is None:
+            return
+        x0, y0, x1, y1 = placed.box
+        # The picture's box, from its lower-left corner, like AutoCAD writes it.
+        outline = [(x0, y1), (x1, y1), (x1, y0), (x0, y0)]
+        self.out.prims.append(Prim("image", [outline], [False], Style(), shape.layer, placed))
 
     def shape(self, shape: PathShape, region: _ClipRegion | None, opacity: float, dx: float, dy: float) -> None:
         contours, closed = to_contours(shape.ops, dx, dy)
@@ -451,6 +479,104 @@ class _Preparer:
             lines, line_closed = _stroke_contours(contours, closed, region)
             if lines:
                 self.out.prims.append(Prim("stroke", lines, line_closed, line_style, shape.layer))
+
+
+def _box_of(m: Matrix) -> tuple[float, float, float, float]:
+    """Bounding box (points) of the unit square mapped by ``m``."""
+    a, b, c, d, e, f = m
+    xs = [e, a + e, c + e, a + c + e]
+    ys = [f, b + f, d + f, b + d + f]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _redraw(img: ImageData, m: Matrix, region: _ClipRegion | None, opacity: float) -> PlacedImage | None:
+    """Draw a picture upright onto a transparent canvas covering its box.
+
+    Autodesk's format can only place a picture as an upright, unclipped
+    box. So a rotated, mirrored, skewed, clipped or see-through picture is
+    painted (by MuPDF, as a PDF viewer would) into a new upright picture of
+    about the same resolution; areas outside it stay transparent.
+    """
+    a, b, c, d, _, _ = m
+    side_x, side_y = math.hypot(a, b), math.hypot(c, d)
+    if side_x <= 0 or side_y <= 0:
+        return None
+    x0, y0, x1, y1 = _box_of(m)
+    if region is not None and region.bbox is not None:
+        # Only the part inside the clip is visible; no need to paint more.
+        rx0, ry0, rx1, ry1 = (v / UNITS_PER_PT for v in region.bbox)
+        x0, y0, x1, y1 = max(x0, rx0), max(y0, ry0), min(x1, rx1), min(y1, ry1)
+        if x1 <= x0 or y1 <= y0:
+            return None
+    k = max(img.width / side_x, img.height / side_y)  # pixels per point
+    w_pt, h_pt = x1 - x0, y1 - y0
+    k = min(k, math.sqrt(MAX_PICTURE_PIXELS / max(w_pt * h_pt, 1e-9)), MAX_PICTURE_SIDE / max(w_pt, h_pt))
+    width, height = max(1, math.ceil(w_pt * k)), max(1, math.ceil(h_pt * k))
+
+    pix = mupdf.FzPixmap(mupdf.FzColorspace(mupdf.FzColorspace.Fixed_RGB), width, height, mupdf.FzSeparations(), 1)
+    mupdf.fz_clear_pixmap(pix)  # fully transparent
+    device = mupdf.fz_new_draw_device(mupdf.FzMatrix(), pix)
+    to_pixels = (k, 0.0, 0.0, k, -x0 * k, -y0 * k)
+    clipped = region is not None and region.paths
+    if clipped:
+        path = mupdf.fz_new_path()
+        s = k / UNITS_PER_PT
+        for contour in region.paths:  # type: ignore[union-attr]
+            (px, py), *rest = contour
+            mupdf.fz_moveto(path, px * s - x0 * k, py * s - y0 * k)
+            for px, py in rest:
+                mupdf.fz_lineto(path, px * s - x0 * k, py * s - y0 * k)
+            mupdf.fz_closepath(path)
+        mupdf.fz_clip_path(device, path, 0, mupdf.FzMatrix(), mupdf.FzRect(mupdf.FzRect.Fixed_INFINITE))
+    image = mupdf.fz_new_image_from_buffer(mupdf.fz_new_buffer_from_copied_data(img.data))
+    placement = _concat(m, to_pixels)
+    mupdf.fz_fill_image(device, image, mupdf.FzMatrix(*placement), opacity, mupdf.FzColorParams())
+    if clipped:
+        mupdf.fz_pop_clip(device)
+    mupdf.fz_close_device(device)
+
+    out = pymupdf.Pixmap(pix, 1)
+    out.set_dpi(96, 96)
+    data = ImageData(out.tobytes("png"), "png", width, height)
+    box = (
+        round(x0 * UNITS_PER_PT),
+        round(y0 * UNITS_PER_PT),
+        round(x0 * UNITS_PER_PT + width / k * UNITS_PER_PT),
+        round(y0 * UNITS_PER_PT + height / k * UNITS_PER_PT),
+    )
+    return PlacedImage(hashlib.sha1(data.data).hexdigest(), data, box)
+
+
+def _concat(m1: Matrix, m2: Matrix) -> Matrix:
+    """Apply m1 first, then m2."""
+    a1, b1, c1, d1, e1, f1 = m1
+    a2, b2, c2, d2, e2, f2 = m2
+    return (
+        a1 * a2 + b1 * c2,
+        a1 * b2 + b1 * d2,
+        c1 * a2 + d1 * c2,
+        c1 * b2 + d1 * d2,
+        e1 * a2 + f1 * c2 + e2,
+        e1 * b2 + f1 * d2 + f2,
+    )
+
+
+def place_image(
+    img: ImageData, key: str, m: Matrix, region: _ClipRegion | None, opacity: float
+) -> PlacedImage | None:
+    """Turn a picture placement into an upright box (redrawing if needed)."""
+    x0, y0, x1, y1 = _box_of(m)
+    box = (round(x0 * UNITS_PER_PT), round(y0 * UNITS_PER_PT), round(x1 * UNITS_PER_PT), round(y1 * UNITS_PER_PT))
+    if box[2] <= box[0] or box[3] <= box[1]:
+        return None
+    relation = _relation(region, box)
+    if relation == "outside":
+        return None
+    a, b, c, d = m[:4]
+    upright = abs(b) < 1e-9 and abs(c) < 1e-9 and a > 0 and d > 0
+    if upright and relation == "inside" and opacity >= 1:
+        return PlacedImage(key, img, box)  # use the picture as it is
+    return _redraw(img, m, region if relation == "cut" else None, opacity)
 
 
 def prepare(sheet: Sheet) -> Prepared:
