@@ -677,9 +677,3 @@ def read_page(page: pymupdf.Page, title: str | None = None) -> Sheet:
     if hidden:
         sheet.unsupported["layers switched off in the PDF (left out)"] += hidden
     return sheet
-
-
-def unsupported_summary(sheet: Sheet) -> list[str]:
-    return [f"{feature} ({count}x)" for feature, count in sorted(sheet.unsupported.items())]
-
-

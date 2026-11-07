@@ -16,7 +16,7 @@ def test_default_output_next_to_pdf(tmp_path: Path) -> None:
 
 def test_missing_page_is_reported(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     pdf = drawing_pdf(tmp_path / "plan.pdf")
-    assert main([str(pdf), "--page", "5"]) == 1
+    assert main([str(pdf), "--pages", "5"]) == 1
     assert "page 5 does not exist" in capsys.readouterr().err
 
 
