@@ -24,6 +24,7 @@ from xml.sax.saxutils import quoteattr
 
 from . import __version__
 from .model import Sheet
+from .fonts import obfuscate
 from .pdf_reader import fmt
 from .prepare import UNITS_PER_MM, Prepared, prepare
 from .w2x import w2x
@@ -41,6 +42,7 @@ REL_DWF_W2X = "http://schemas.autodesk.com/dwfx/2007/relationships/graphics2dext
 REL_DWF_DICTIONARY = "http://schemas.autodesk.com/dwfx/2007/relationships/graphics2ddictionaryresource"
 REL_DWF_RASTER = "http://schemas.autodesk.com/dwfx/2007/relationships/rasterreferenceresource"
 REL_XPS_REQUIRED = "http://schemas.microsoft.com/xps/2005/06/required-resource"
+REL_DWF_FONT = "http://schemas.autodesk.com/dwfx/2007/relationships/fontresource"
 
 # --- Content (MIME) types ---------------------------------------------------
 DEFAULT_TYPES = {
@@ -52,9 +54,11 @@ DEFAULT_TYPES = {
     "dwfseq": "application/vnd.adsk-package.dwfx-dwfdocumentsequence+xml",
     "png": "image/png",
     "jpg": "image/jpeg",
+    "odttf": "application/vnd.ms-package.obfuscated-opentype",
 }
 CORE_PROPS_TYPE = "application/vnd.openxmlformats-package.core-properties+xml"
 DICTIONARY_TYPE = "application/vnd.ms-package.xps-resourcedictionary+xml"
+FONT_TYPE = "application/vnd.ms-package.obfuscated-opentype"
 IMAGE_MIME = {"png": "image/png", "jpg": "image/jpeg"}
 # How the DWF manifest labels the XPS page that carries a sheet's graphics.
 FIXEDPAGE_DWF_MIME = "application/vnd.adsk-package.dwfx-fixedpage+xml"
@@ -109,7 +113,8 @@ class _Resource:
     role: str  # DWF role name, e.g. "2d graphics extension"
     mime: str
     relationship: str  # how the sheet's graphics refer to it
-    element: str = "Resource"  # "ImageResource" for pictures
+    element: str = "Resource"  # "ImageResource" for pictures, "FontResource" for fonts
+    attributes: str = ""  # extra attributes, e.g. a font's name
     object_id: str = field(default_factory=lambda: _guid())
 
 
@@ -121,7 +126,7 @@ def _descriptor(sheet: Sheet, order: int, fpage_part: str, resources: list[_Reso
     ePlot:Relationships."""
     w, h = fmt(sheet.width_mm, 6), fmt(sheet.height_mm, 6)
     listed = "".join(
-        f'<ePlot:{r.element} role="{r.role}" mime="{r.mime}" href="{r.part}" objectId="{r.object_id}"/>'
+        f'<ePlot:{r.element} role="{r.role}" mime="{r.mime}" href="{r.part}" objectId="{r.object_id}"{r.attributes}/>'
         for r in resources
     )
     links = "".join(
@@ -170,17 +175,34 @@ def build_parts(sheets: Sequence[Sheet]) -> dict[str, bytes]:
         dictionary = resource_dictionary(prepared, sources)
         dictionary_part = f"{folder}/Dictionary.xml" if dictionary else None
 
-        parts[fpage] = fixed_page(prepared, GRAPHICS_ID, "./Dictionary.xml" if dictionary else None)
-        parts[w2x_part] = w2x(prepared, sources)
+        # Fonts used by text: embedded (scrambled, as XPS requires) under a
+        # GUID name, which is also the key for unscrambling them.
+        font_uris: dict[str, str] = {}
+        font_parts: list[tuple[str, str]] = []  # (part, Windows family name)
+        for key, font in prepared.fonts.items():
+            guid = _guid()
+            part = f"{folder}/{guid}.odttf"
+            parts[part] = obfuscate(font.data, guid)
+            font_uris[key] = f"./{guid}.odttf"
+            font_parts.append((part, font.family))
+
+        parts[fpage] = fixed_page(prepared, GRAPHICS_ID, "./Dictionary.xml" if dictionary else None, font_uris)
+        parts[w2x_part] = w2x(prepared, sources, font_uris)
         resources = [_Resource(w2x_part, "2d graphics extension", "text/xml", REL_DWF_W2X)]
+        page_resources: list[str] = []  # XPS: files the page needs
         if dictionary_part:
             parts[dictionary_part] = dictionary  # type: ignore[assignment]
             overrides[dictionary_part] = DICTIONARY_TYPE
             resources.append(_Resource(dictionary_part, "2d graphics dictionary", DICTIONARY_TYPE, REL_DWF_DICTIONARY))
-            # XPS: the page needs its brush list and pictures as resources.
-            parts[_rels_path(fpage)] = _relationships(
-                [(dictionary_part, REL_XPS_REQUIRED)] + [(part, REL_XPS_REQUIRED) for part, _ in image_parts]
+            page_resources += [dictionary_part] + [part for part, _ in image_parts]
+        for part, family in font_parts:
+            resources.append(
+                _Resource(part, "font", FONT_TYPE, REL_DWF_FONT, "FontResource",
+                          f' request="2" privilege="previewPrint" characterCode="unicode" canonicalName={quoteattr(family)}')
             )
+            page_resources.append(part)
+        if page_resources:
+            parts[_rels_path(fpage)] = _relationships([(part, REL_XPS_REQUIRED) for part in page_resources])
         for part, ext in image_parts:
             resources.append(_Resource(part, "raster reference", IMAGE_MIME[ext], REL_DWF_RASTER, "ImageResource"))
         parts[descriptor] = _descriptor(sheet, order, fpage, resources)

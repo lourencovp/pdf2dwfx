@@ -20,7 +20,9 @@ from typing import Any
 import pymupdf
 from pymupdf import mupdf
 
+from .fonts import is_truetype, truetype_names, windows_font
 from .model import (
+    FontData,
     Group,
     ImageData,
     ImageShape,
@@ -28,6 +30,7 @@ from .model import (
     PathShape,
     Sheet,
     Style,
+    TextShape,
 )
 
 # PDF line width 0 means "thinnest line the device can show". XPS would
@@ -344,6 +347,7 @@ class _Recorder(mupdf.FzDevice2):
         self.layers: list[str] = []
         self.layer_tree = layer_tree
         self.layer_cache: dict[tuple[str, ...], str] = {}
+        self.font_keys: dict[int, str | None] = {}  # MuPDF font -> sheet.fonts key
         self.clip_boxes: dict[int, pymupdf.Rect] = {}  # id(clip group) -> bounding box
         # Open "clip by image" groups: id(group) -> [mask address, used?]
         self.image_clips: dict[int, list] = {}
@@ -477,10 +481,118 @@ class _Recorder(mupdf.FzDevice2):
     # -- text (converted in milestone 3) --
 
     def fill_text(self, ctx: Any, text: Any, ctm: Any, cs: Any, color: Any, alpha: float, cp: Any) -> None:
-        self._note("text")
+        fill = self.colors.xps(cs, color, alpha)
+        m = self._sheet_matrix(ctm)
+        span = text.head
+        while span:
+            self._text_span(mupdf.FzTextSpan(span), m, fill)
+            span = span.next
 
     def stroke_text(self, ctx: Any, text: Any, stroke: Any, ctm: Any, cs: Any, color: Any, alpha: float, cp: Any) -> None:
-        self._note("text")
+        # Outlined letters: Autodesk's text has no outline mode, so draw them
+        # as normal (filled) text in the outline colour.
+        self._note("outlined text (drawn as normal text)")
+        self.fill_text(ctx, text, ctm, cs, color, alpha, cp)
+
+    def _font(self, font: mupdf.FzFont) -> str | None:
+        """Key of a font in sheet.fonts (registered on first use), or None if
+        its file cannot be embedded in a DWFx (only TrueType/OpenType can)."""
+        address = font.m_internal_value()
+        if address in self.font_keys:
+            return self.font_keys[address]
+        key = None
+        buffer = font.m_internal.buffer
+        if buffer is not None:
+            data = bytes(mupdf.fz_buffer_extract_copy(mupdf.FzBuffer(mupdf.ll_fz_keep_buffer(buffer))))
+            if is_truetype(data):
+                bold, italic = bool(mupdf.fz_font_is_bold(font)), bool(mupdf.fz_font_is_italic(font))
+                names = truetype_names(data)
+                if names:  # the font file's own Windows name: most reliable
+                    family, style = names
+                    bold = bold or "bold" in style.lower()
+                    italic = italic or "italic" in style.lower() or "oblique" in style.lower()
+                else:  # otherwise derive it from the PDF's font name
+                    family, bold, italic = windows_font(mupdf.fz_font_name(font), bold, italic)
+                key = hashlib.sha1(data).hexdigest()
+                self.sheet.fonts.setdefault(key, FontData(data, family, bold, italic))
+        self.font_keys[address] = key
+        return key
+
+    def _text_span(self, span: mupdf.FzTextSpan, m: Matrix, fill: str) -> None:
+        """Turn one run of letters into text items a viewer lays out itself.
+
+        Design Review places letters using the font's own spacing (it keeps
+        no per-letter positions). So letters stay in one item only while
+        the PDF puts each where the font would; where the PDF moves a letter
+        by hand, a gap of about whole spaces becomes spaces, and anything
+        else starts a new item at the letter's exact position.
+        """
+        font = span.font()
+        key = self._font(font)
+        count = span.m_internal.len
+        if key is None:
+            self._note("text in fonts that cannot be embedded")
+            return
+        trm = span.trm()
+        a, b, c, d = concat((trm.a, trm.b, trm.c, trm.d, 0, 0), m)[:4]
+        # PDF glyph space has y up; XPS em squares have y down.
+        matrix = (a, b, -c, -d)
+        size_x, size_y = math.hypot(a, b), math.hypot(c, d)
+        if size_x <= 0 or size_y <= 0:
+            return
+        if a * (-d) - b * (-c) <= 0 or abs(a * -c + b * -d) > 1e-6 * size_x * size_y:
+            self._note("mirrored or slanted text (drawn upright)")
+        ux, uy = a / size_x, b / size_x  # baseline direction
+        space_gid = mupdf.fz_encode_character(font, 32)
+        space = mupdf.fz_advance_glyph(font, space_gid, 0) * size_x if space_gid > 0 else 0.28 * size_x
+        e, f = m[4], m[5]
+        ma, mb, mc, md = m[:4]
+
+        run: dict | None = None  # the text item being built
+
+        def finish() -> None:
+            nonlocal run
+            if run and run["text"].strip():
+                run["advances"].append(run["expected"])
+                self._add(TextShape(run["text"], key, run["origin"], matrix, fill, run["glyphs"], run["advances"], self.layer))
+            run = None
+
+        for i in range(count):
+            item = span.items(i)
+            if item.gid < 0:
+                continue  # a character with no glyph (part of a ligature)
+            if item.ucs <= 0:
+                self._note("characters with unknown meaning (left out)")
+                finish()
+                continue
+            px = ma * item.x + mc * item.y + e
+            py = mb * item.x + md * item.y + f
+            expected = mupdf.fz_advance_glyph(font, item.gid, 0) * size_x
+            if run is not None:
+                dx, dy = px - run["last"][0], py - run["last"][1]
+                along = dx * ux + dy * uy  # actual pen movement along the baseline
+                across = dy * ux - dx * uy
+                gap = along - run["expected"]
+                if abs(across) > 0.05 * size_y or abs(gap) > 0.1 * size_x:
+                    spaces = round(gap / space) if space > 0 and abs(across) <= 0.05 * size_y else 0
+                    if spaces >= 1 and abs(gap - spaces * space) <= 0.3 * space and item.ucs != 32:
+                        # Words placed by position instead of with spaces.
+                        run["advances"].append(run["expected"])
+                        for _ in range(spaces):
+                            run["text"] += " "
+                            run["glyphs"].append(space_gid if space_gid > 0 else 0)
+                            run["advances"].append(gap / spaces)
+                    else:
+                        finish()
+                else:
+                    run["advances"].append(along)
+            if run is None:
+                run = {"text": "", "origin": (px, py), "glyphs": [], "advances": []}
+            run["text"] += chr(item.ucs)
+            run["glyphs"].append(item.gid)
+            run["last"] = (px, py)
+            run["expected"] = expected
+        finish()
 
     def ignore_text(self, ctx: Any, text: Any, ctm: Any) -> None:
         pass  # invisible text (e.g. for searching); nothing to draw

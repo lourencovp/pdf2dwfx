@@ -11,6 +11,9 @@ Design Review) understands; see prepare.py for the background:
 
 from __future__ import annotations
 
+import math
+from xml.sax.saxutils import quoteattr
+
 from .pdf_reader import fmt
 from .prepare import UNITS_PER_MM, Prepared, Prim
 from .model import Style
@@ -103,7 +106,44 @@ def resource_dictionary(prepared: Prepared, sources: dict[str, str]) -> bytes | 
     ).encode("utf-8")
 
 
-def fixed_page(prepared: Prepared, canvas_name: str, dictionary_source: str | None = None) -> bytes:
+def _glyphs(name: str, prim: Prim, font_uri: str) -> str:
+    """A text item as XPS Glyphs.
+
+    Design Review only uses the letters (UnicodeString); the rest lets other
+    XPS viewers draw every letter exactly where the PDF put it: glyph
+    numbers and advances (Indices, in hundredths of the text size) and a
+    transform for rotated or stretched text.
+    """
+    t = prim.text
+    a, b, c, d = t.matrix  # type: ignore[union-attr]
+    em = math.hypot(c, d)  # text size: height of the em square
+    width = math.hypot(a, b)
+    x, y = t.origin  # type: ignore[union-attr]
+    indices = ";".join(
+        f"{gid},{fmt(adv / width * 100, 3)}" for gid, adv in zip(t.glyphs, t.advances)  # type: ignore[union-attr]
+    )
+    text = t.text  # type: ignore[union-attr]
+    if text.startswith("{"):
+        text = "{}" + text  # XPS: a leading "{}" escapes a leading brace
+    transform = ""
+    la, lb, lc, ld = a / em, b / em, c / em, d / em
+    if abs(la - 1) > 1e-6 or abs(lb) > 1e-6 or abs(lc) > 1e-6 or abs(ld - 1) > 1e-6:
+        # Rotated/stretched text: turn about the text's own origin.
+        tx, ty = x - (la * x + lc * y), y - (lb * x + ld * y)
+        transform = f' RenderTransform="{",".join(fmt(v, 9) for v in (la, lb, lc, ld, tx, ty))}"'
+    return (
+        f'<Glyphs Name="{name}" Fill="{prim.style.fill}" FontUri="{font_uri}" '
+        f'FontRenderingEmSize="{fmt(em, 2)}" OriginX="{x}" OriginY="{y}" '
+        f"UnicodeString={quoteattr(text)} Indices=\"{indices}\"{transform}/>"
+    )
+
+
+def fixed_page(
+    prepared: Prepared,
+    canvas_name: str,
+    dictionary_source: str | None = None,
+    font_uris: dict[str, str] | None = None,
+) -> bytes:
     """Build the FixedPage XML.
 
     The outer canvas carries ``canvas_name``: the DWF sheet description
@@ -130,6 +170,9 @@ def fixed_page(prepared: Prepared, canvas_name: str, dictionary_source: str | No
     if dictionary_source:
         out.append(f'<Canvas.Resources><ResourceDictionary Source="{dictionary_source}"/></Canvas.Resources>')
     for index, prim in enumerate(prepared.prims, start=1):
+        if prim.kind == "text":
+            out.append(_glyphs(shape_name(index), prim, (font_uris or {})[prim.text.font]))  # type: ignore[union-attr]
+            continue
         if prim.kind == "fill":
             paint = f'Fill="{prim.style.fill}"'
         elif prim.kind == "image":

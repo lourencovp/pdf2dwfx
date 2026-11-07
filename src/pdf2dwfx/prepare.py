@@ -27,7 +27,7 @@ import pymupdf
 import pyclipper
 from pymupdf import mupdf
 
-from .model import Group, ImageData, ImageShape, Matrix, PathOps, PathShape, Sheet, Style
+from .model import Group, ImageData, ImageShape, Matrix, PathOps, PathShape, Sheet, Style, TextShape
 
 # The whole-number grid: 1 unit = 1 micrometre (0.001 mm). Far finer than
 # any printer or screen, and an A0 sheet (1189 mm) is only ~1.2 million
@@ -59,20 +59,34 @@ class PlacedImage:
 
 
 @dataclass
+class PreparedText:
+    """A text item on the grid (see model.TextShape; lengths in grid units)."""
+
+    text: str
+    font: str  # key into Prepared.fonts
+    origin: Point
+    matrix: tuple[float, float, float, float]
+    glyphs: list[int]
+    advances: list[float]
+
+
+@dataclass
 class Prim:
     """One shape ready for writing: whole-number outlines plus its style.
 
     For fills, there is exactly one closed outline without holes. For
     strokes, ``closed`` says which outlines join back to their start.
     For pictures, ``image`` holds the picture and ``contours`` its box.
+    For text, ``text`` holds the text item (colour in ``style.fill``).
     """
 
-    kind: str  # "fill", "stroke" or "image"
+    kind: str  # "fill", "stroke", "image" or "text"
     contours: list[Contour]
     closed: list[bool]
     style: Style  # widths and dash lengths in grid units
     layer: str | None = None
     image: PlacedImage | None = None
+    text: PreparedText | None = None
 
 
 @dataclass
@@ -80,6 +94,7 @@ class Prepared:
     width_units: int
     height_units: int
     prims: list[Prim] = field(default_factory=list)
+    fonts: dict = field(default_factory=dict)  # key -> model.FontData, fonts used by text
 
 
 # --- Geometry helpers ------------------------------------------------------------
@@ -430,6 +445,8 @@ class _Preparer:
                 self.shape(child, region, opacity, dx, dy)
             elif isinstance(child, ImageShape):
                 self.image(child, region, opacity, dx, dy)
+            elif isinstance(child, TextShape):
+                self.text(child, region, opacity, dx, dy)
             else:
                 self.group(child, region, opacity, dx, dy)
 
@@ -453,6 +470,28 @@ class _Preparer:
         # The picture's box, from its lower-left corner, like AutoCAD writes it.
         outline = [(x0, y1), (x1, y1), (x1, y0), (x0, y0)]
         self.out.prims.append(Prim("image", [outline], [False], Style(), shape.layer, placed))
+
+    def text(self, shape: TextShape, region: _ClipRegion | None, opacity: float, dx: float, dy: float) -> None:
+        k = UNITS_PER_PT
+        ox, oy = (shape.origin[0] + dx) * k, (shape.origin[1] + dy) * k
+        a, b, c, d = (v * k for v in shape.matrix)
+        # The text's box: along the baseline by its total advance, up by its size.
+        length = sum(shape.advances) * k / max(math.hypot(a, b), 1e-9)
+        corners = [(ox, oy), (ox + a * length, oy + b * length), (ox - c, oy - d), (ox + a * length - c, oy + b * length - d)]
+        box = (
+            round(min(x for x, _ in corners)), round(min(y for _, y in corners)),
+            round(max(x for x, _ in corners)), round(max(y for _, y in corners)),
+        )
+        # Text cannot be cut at a clip edge; it is only left out when it lies
+        # completely outside the visible area (as a PDF viewer would hide it).
+        if _relation(region, box) == "outside":
+            return
+        self.out.fonts[shape.font] = self.sheet.fonts[shape.font]
+        text = PreparedText(
+            shape.text, shape.font, (round(ox), round(oy)), (a, b, c, d), shape.glyphs, [v * k for v in shape.advances]
+        )
+        style = Style(fill=_with_opacity(shape.fill, opacity))
+        self.out.prims.append(Prim("text", [], [], style, shape.layer, text=text))
 
     def shape(self, shape: PathShape, region: _ClipRegion | None, opacity: float, dx: float, dy: float) -> None:
         contours, closed = to_contours(shape.ops, dx, dy)

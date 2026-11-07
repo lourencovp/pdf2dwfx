@@ -28,6 +28,7 @@ Every rule below was verified by opening test files in Design Review:
 
 from __future__ import annotations
 
+import math
 from xml.sax.saxutils import quoteattr
 
 from .pdf_reader import fmt
@@ -48,8 +49,36 @@ IMAGE_FORMAT_JPEG = 8  # WD_IMAGE_JPEG_EXT_OPCODE in the DWF Toolkit
 IMAGE_FORMAT_PNG = 12  # WD_IMAGE_PNG_EXT_OPCODE
 
 
-def w2x(prepared: Prepared, sources: dict[str, str] | None = None) -> bytes:
-    """``sources`` maps picture keys to their location ("./name.png")."""
+def _font_setting(prim, prepared: Prepared, font_uris: dict[str, str]) -> str:
+    """The W2X Font setting for a text item.
+
+    Design Review draws the text with the *installed* font of this name, at
+    this height, turned by this rotation (verified); the embedded font file
+    (FontUri) is only listed. Rotation is in 1/65536 of a full turn,
+    counter-clockwise. WidthScale (1024 = normal) covers stretched text.
+    """
+    t = prim.text
+    font = prepared.fonts[t.font]
+    a, b, c, d = t.matrix
+    height = max(1, round(math.hypot(c, d)))
+    angle = math.degrees(math.atan2(-b, a)) % 360  # page y points down
+    rotation = round(angle / 360 * 65536) % 65536
+    width_scale = round(1024 * math.hypot(a, b) / math.hypot(c, d))
+    extra = f' WidthScale="{width_scale}"' if abs(width_scale - 1024) > 10 else ""
+    return (
+        f"<Font Name={quoteattr(font.family)} FontUri=\"{font_uris[t.font]}\" "
+        f'Bold="{int(font.bold)}" Italic="{int(font.italic)}" Underline="0" '
+        f'Height="{height}" Rotation="{rotation}"{extra}/>'
+    )
+
+
+def w2x(
+    prepared: Prepared,
+    sources: dict[str, str] | None = None,
+    font_uris: dict[str, str] | None = None,
+) -> bytes:
+    """``sources`` maps picture keys and ``font_uris`` font keys to their
+    location relative to the page ("./name.png")."""
     mm_per_unit = fmt(1 / UNITS_PER_MM, 12)
     out = [
         f'<W2X VersionMajor="7" VersionMinor="0" NamePrefix="{NAME_PREFIX}">',
@@ -59,6 +88,7 @@ def w2x(prepared: Prepared, sources: dict[str, str] | None = None) -> bytes:
         f'Area="0,0,{prepared.width_units},{prepared.height_units}"/>',
     ]
     current_weight: int | None = None
+    current_font: str | None = None
     current_layer: str | None = None
     layer_numbers: dict[str, int] = {}
     for index, prim in enumerate(prepared.prims, start=1):
@@ -79,6 +109,11 @@ def w2x(prepared: Prepared, sources: dict[str, str] | None = None) -> bytes:
             if weight != current_weight:
                 changes.insert(0, f'<Line_Weight Weight="{weight}"/>')
                 current_weight = weight
+        if prim.kind == "text":
+            font = _font_setting(prim, prepared, font_uris or {})
+            if font != current_font:
+                changes.append(font)
+                current_font = font
         if changes:
             out.append(f'<RenditionSync refName="{name}">{"".join(changes)}</RenditionSync>')
         if prim.kind == "fill":
@@ -96,5 +131,9 @@ def w2x(prepared: Prepared, sources: dict[str, str] | None = None) -> bytes:
                 f'<{element} refName="{name}" Format="{fmt_code}" Ref="{(sources or {})[img.key]}" '  # type: ignore[union-attr]
                 f'Width="{img.data.width}" Height="{img.data.height}" Area="{x0},{h - y1},{x1},{h - y0}"/>'  # type: ignore[union-attr]
             )
+        elif prim.kind == "text":
+            # The start of the baseline, in Autodesk's coordinates (y up).
+            x, y = prim.text.origin  # type: ignore[union-attr]
+            out.append(f'<Text refName="{name}" StartPoint="{x},{prepared.height_units - y}"/>')
     out.append("</W2X>")
     return "".join(out).encode("utf-8")

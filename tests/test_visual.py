@@ -39,18 +39,6 @@ def _difference(pdf: Path, dwfx: Path) -> float:
     return different / (w * h)
 
 
-def without_text(pdf: Path, out: Path) -> Path:
-    """The PDF with its text removed (text is converted in milestone 3)."""
-    doc = pymupdf.open(pdf)
-    for page in doc:
-        page.add_redact_annot(page.rect)
-        page.apply_redactions(
-            images=pymupdf.PDF_REDACT_IMAGE_NONE, graphics=pymupdf.PDF_REDACT_LINE_ART_NONE
-        )
-    doc.save(out)
-    return out
-
-
 @pytest.mark.parametrize(
     "options",
     [
@@ -89,12 +77,11 @@ def test_stretched_line_is_reported(tmp_path: Path) -> None:
 
 
 def test_private_sample_looks_like_pdf(tmp_path: Path, private_tests_dir: Path) -> None:
-    """Real drawing (only on the owner's machine): everything except text
-    must match the PDF exactly."""
+    """Real drawing (only on the owner's machine): everything, text
+    included, must match the PDF exactly."""
     pdf = private_tests_dir / "pdf" / "singlepdfpage.pdf"
     if not pdf.exists():
         pytest.skip("singlepdfpage.pdf not present")
     dwfx = tmp_path / "out.dwfx"
-    assert convert(pdf, dwfx) == ["text (155x)"]
-    reference = without_text(pdf, tmp_path / "reference.pdf")
-    assert _difference(reference, dwfx) < 0.0005
+    assert convert(pdf, dwfx) == []
+    assert _difference(pdf, dwfx) < 0.0005

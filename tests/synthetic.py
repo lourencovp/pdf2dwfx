@@ -245,3 +245,32 @@ def layers_pdf(path: Path, with_hidden: bool = False) -> Path:
     _append(page, b"\n".join(content))
     doc.save(path)
     return path
+
+
+def text_pdf(path: Path) -> Path:
+    """A page with text the way CAD programs write it, using a TrueType font
+    that ships with PyMuPDF (so the test works on every system): plain
+    text, rotated text, words placed by position instead of spaces, and
+    text on a PDF layer."""
+    w, h = A4_MM[0] * MM, A4_MM[1] * MM
+    doc = pymupdf.open()
+    page = doc.new_page(width=w, height=h)
+    page.insert_font(fontname="F1", fontbuffer=pymupdf.Font("cjk").buffer)
+    page.insert_text((50, 100), "PLANTA PISO 1 | 1:100", fontname="F1", fontsize=14)
+    page.insert_text((50, 140), "Sala de estar 25,40 m2", fontname="F1", fontsize=9, color=(0, 0, 0.8))
+    page.insert_text((300, 400), "ALCADO NORTE", fontname="F1", fontsize=10, rotate=90)
+    ocg = doc.add_ocg("TEXT")
+    page.insert_text((50, 600), "On a layer", fontname="F1", fontsize=12, oc=ocg)
+    # Words placed by position (TJ with a gap), as many CAD exports do.
+    font_name = [f[4] for f in page.get_fonts() if "Droid" in f[3]][0]
+    gid = pymupdf.Font("cjk")
+    def hexs(s: str) -> str:
+        return "".join(f"{gid.has_glyph(ord(ch)):04X}" for ch in s)
+    _append(
+        page,
+        b"BT /%s 11 Tf 50 %.2f Td [<%s> -1500 <%s>] TJ ET"
+        % (font_name.encode(), h - 200, hexs("COZINHA").encode(), hexs("12m2").encode()),
+    )
+    doc.subset_fonts()  # after all text is written, so every letter is kept
+    doc.save(path)
+    return path
