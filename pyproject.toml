@@ -1,0 +1,23 @@
+[project]
+name = "pdf2dwfx"
+version = "0.1.0"
+description = "Convert vector PDF drawings into DWFx files for municipal architecture submissions"
+readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [
+    { name = "lourencovp", email = "66488581+lourencovp@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "pymupdf<2",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]

@@ -1,0 +1,31 @@
+# --- Private test drawings: NEVER publish (real project files) ---
+pdf2dwfx-private-tests/
+# Belt and braces: no real drawings or reference files anywhere in the repo.
+# Synthetic fixtures in tests/fixtures are allowed explicitly below.
+*.pdf
+*.dwf
+*.dwfx
+!tests/fixtures/**
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# --- Converter output and crash reports created while testing ---
+output/
+crash-reports/
+
+# --- Editors and operating systems ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Claude Code local settings ---
+.claude/settings.local.json

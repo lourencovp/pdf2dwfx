@@ -1,0 +1,17 @@
+# Normalise line endings so the project behaves the same on Windows, macOS and Linux.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary files: never touch their bytes.
+*.pdf binary
+*.dwf binary
+*.dwfx binary
+*.zip binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.icns binary
