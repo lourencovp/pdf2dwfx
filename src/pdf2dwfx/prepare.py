@@ -209,13 +209,56 @@ def _relation(region: _ClipRegion | None, bbox: tuple[int, int, int, int]) -> st
     return "cut"
 
 
-def _fill_contours(contours: list[Contour], even_odd: bool, region: _ClipRegion | None) -> list[Contour]:
-    """Filled outlines, trimmed to the clip region and made non-overlapping."""
+def _is_rectangle(contour: Contour) -> bool:
+    if len(contour) != 4:
+        return False
+    x0, y0, x1, y1 = _bbox([contour])
+    return all(x in (x0, x1) and y in (y0, y1) for x, y in contour)
+
+
+def _split_holes(outer: Contour, holes: list[Contour], depth: int = 0) -> list[Contour]:
+    """Cut a filled area with holes into pieces without holes.
+
+    Design Review cannot show a filled shape with a hole: Autodesk's
+    "contour set" (several outlines in one shape) makes the page fail, and
+    without it each outline is filled on its own, so holes come out filled
+    (both verified in Design Review). Pieces that only touch each other
+    look the same as the original area. We cut vertically through the
+    first hole; that hole then opens onto the cut edge in both halves, and
+    we repeat for the remaining holes.
+    """
+    if not holes:
+        return [outer]
+    if depth > 64:  # safety net for degenerate slivers; never seen in practice
+        return [outer]
+    xs = [x for x, _ in holes[0]]
+    cut = (min(xs) + max(xs)) // 2
+    x0, y0, x1, y1 = _bbox([outer])
+    pieces: list[Contour] = []
+    for a, b in ((x0 - 1, cut), (cut, x1 + 1)):
+        half = [(a, y0 - 1), (b, y0 - 1), (b, y1 + 1), (a, y1 + 1)]
+        pc = pyclipper.Pyclipper()
+        pc.AddPath(outer, pyclipper.PT_SUBJECT, True)
+        pc.AddPaths(holes, pyclipper.PT_SUBJECT, True)
+        pc.AddPath(half, pyclipper.PT_CLIP, True)
+        # Outer and holes run in opposite directions, so "non-zero" filling
+        # leaves the holes empty.
+        tree = pc.Execute2(pyclipper.CT_INTERSECTION, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO)
+        for node in tree.Childs:
+            sub_outer = [tuple(p) for p in node.Contour]
+            sub_holes = [[tuple(p) for p in h.Contour] for h in node.Childs]
+            pieces.extend(_split_holes(sub_outer, sub_holes, depth + 1))
+    return pieces
+
+
+def _fill_pieces(contours: list[Contour], even_odd: bool, region: _ClipRegion | None) -> list[Contour]:
+    """The filled area, trimmed to the clip region, as outlines that never
+    overlap and have no holes (see _split_holes)."""
     relation = _relation(region, _bbox(contours))
     if relation == "outside":
         return []
-    if relation == "inside" and len(contours) == 1:
-        return contours if len(contours[0]) >= 3 else []
+    if relation == "inside" and len(contours) == 1 and _is_rectangle(contours[0]):
+        return contours  # by far the most common case: skip the geometry work
     pc = pyclipper.Pyclipper()
     try:
         pc.AddPaths(contours, pyclipper.PT_SUBJECT, True)
@@ -223,11 +266,83 @@ def _fill_contours(contours: list[Contour], even_odd: bool, region: _ClipRegion 
         return []  # degenerate outline (no area)
     rule = pyclipper.PFT_EVENODD if even_odd else pyclipper.PFT_NONZERO
     if relation == "inside":
-        result = pc.Execute(pyclipper.CT_UNION, rule, rule)
+        tree = pc.Execute2(pyclipper.CT_UNION, rule, rule)
     else:
         pc.AddPaths(region.paths, pyclipper.PT_CLIP, True)  # type: ignore[union-attr]
-        result = pc.Execute(pyclipper.CT_INTERSECTION, rule, pyclipper.PFT_NONZERO)
-    return [[tuple(p) for p in path] for path in result if len(path) >= 3]
+        tree = pc.Execute2(pyclipper.CT_INTERSECTION, rule, pyclipper.PFT_NONZERO)
+    pieces: list[Contour] = []
+
+    def visit(node) -> None:  # an outer outline; its children are holes
+        outer = [tuple(p) for p in node.Contour]
+        holes = [[tuple(p) for p in h.Contour] for h in node.Childs]
+        pieces.extend(_split_holes(outer, holes))
+        for hole in node.Childs:  # islands inside holes are outers again
+            for island in hole.Childs:
+                visit(island)
+
+    for top in tree.Childs:
+        visit(top)
+    return [p for p in pieces if len(p) >= 3]
+
+
+def _dash_pieces(
+    contours: list[Contour], closed: list[bool], dashes: tuple[float, ...], offset: float
+) -> list[Contour]:
+    """Turn dashed lines into separate short line pieces.
+
+    Design Review ignores dash patterns in DWFx pages (verified: dashed
+    lines showed solid), so we draw each dash as its own piece. As in PDF,
+    the pattern starts afresh at the beginning of every outline. A dash of
+    length zero (a dot, drawn by round line caps) becomes a 1-unit piece.
+    """
+    pattern = list(dashes) * (2 if len(dashes) % 2 else 1)
+    total = sum(pattern)
+    if total <= 0:
+        return contours
+    pieces: list[Contour] = []
+    for contour, is_closed in zip(contours, closed):
+        pts = contour + [contour[0]] if is_closed else contour
+        # Where in the pattern the outline starts (the PDF dash offset).
+        pos = offset % total
+        index = 0
+        while pos > 0 and pos >= pattern[index]:
+            pos -= pattern[index]
+            index = (index + 1) % len(pattern)
+        remaining = pattern[index] - pos
+        on = index % 2 == 0
+        current: list[tuple[float, float]] = [pts[0]] if on else []
+        for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+            length = math.hypot(bx - ax, by - ay)
+            t = 0.0
+            while length - t >= remaining:
+                t += remaining
+                p = (ax + (bx - ax) * t / length, ay + (by - ay) * t / length) if length else (ax, ay)
+                if on:
+                    current.append(p)
+                    pieces.append(_as_piece(current))
+                    current = []
+                else:
+                    current = [p]
+                on = not on
+                index = (index + 1) % len(pattern)
+                remaining = pattern[index]
+            remaining -= length - t
+            if on:
+                current.append((bx, by))
+        if on and len(current) >= 2:
+            pieces.append(_as_piece(current))
+    return [p for p in pieces if len(p) >= 2]
+
+
+def _as_piece(points: list[tuple[float, float]]) -> Contour:
+    piece: Contour = []
+    for x, y in points:
+        p = (round(x), round(y))
+        if not piece or piece[-1] != p:
+            piece.append(p)
+    if len(piece) == 1:  # a dot: a 1-unit piece, so its round caps draw the dot
+        piece.append((piece[0][0] + 1, piece[0][1]))
+    return piece
 
 
 def _stroke_contours(
@@ -317,14 +432,24 @@ class _Preparer:
             return
         style = _scaled_style(shape.style, opacity)
         if style.fill:
-            filled = _fill_contours(contours, style.even_odd, region)
-            if filled:
-                fill_style = replace(style, stroke=None, width=0.0, dashes=(), even_odd=False)
-                self.out.prims.append(Prim("fill", filled, [True] * len(filled), fill_style, shape.layer))
+            # One shape per hole-free piece: each gets its own "Polygon"
+            # entry in the W2X file (see w2x.py).
+            fill_style = replace(style, stroke=None, width=0.0, dashes=(), even_odd=False)
+            for piece in _fill_pieces(contours, style.even_odd, region):
+                self.out.prims.append(Prim("fill", [piece], [True], fill_style, shape.layer))
         if style.stroke:
+            line_style = replace(style, fill=None)
+            if style.dashes:
+                # Dashes first, then trimming, so dashes keep their place
+                # at a clip edge exactly as in the PDF.
+                contours = _dash_pieces(contours, closed, style.dashes, style.dash_offset)
+                closed = [False] * len(contours)
+                cap = style.dash_cap
+                line_style = replace(line_style, dashes=(), dash_offset=0.0, start_cap=cap, end_cap=cap)
+            if not contours:
+                return
             lines, line_closed = _stroke_contours(contours, closed, region)
             if lines:
-                line_style = replace(style, fill=None)
                 self.out.prims.append(Prim("stroke", lines, line_closed, line_style, shape.layer))
 
 

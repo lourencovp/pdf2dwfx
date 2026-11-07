@@ -87,10 +87,55 @@ def test_empty_clip_hides_everything() -> None:
     assert prepare(_sheet(Group(clip=[], children=[fill]))).prims == []
 
 
-def test_square_with_hole_keeps_its_hole() -> None:
+def _area(contour) -> float:
+    return abs(sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(contour, contour[1:] + contour[:1]))) / 2
+
+
+def test_square_with_hole_becomes_hole_free_pieces() -> None:
+    """Design Review cannot show holes, so the shape is cut into pieces
+    without holes that together cover exactly the original area."""
     ops = _square(0, 0, 100, 100) + _square(30, 30, 60, 60)
-    (prim,) = prepare(_sheet(PathShape(ops, Style(fill="#000000", even_odd=True)))).prims
-    assert len(prim.contours) == 2  # outer outline + hole
+    prims = prepare(_sheet(PathShape(ops, Style(fill="#000000", even_odd=True)))).prims
+    assert len(prims) >= 2
+    assert all(len(p.contours) == 1 for p in prims)
+    total = sum(_area(p.contours[0]) for p in prims)
+    expected = (u(100) ** 2) - (u(60) - u(30)) ** 2
+    assert abs(total - expected) <= expected * 1e-6
+
+
+def test_island_inside_hole_is_kept() -> None:
+    ops = _square(0, 0, 100, 100) + _square(20, 20, 80, 80) + _square(40, 40, 60, 60)
+    prims = prepare(_sheet(PathShape(ops, Style(fill="#000000", even_odd=True)))).prims
+    total = sum(_area(p.contours[0]) for p in prims)
+    expected = u(100) ** 2 - (u(80) - u(20)) ** 2 + (u(60) - u(40)) ** 2
+    assert abs(total - expected) <= expected * 1e-6
+
+
+def test_dashes_become_separate_pieces() -> None:
+    style = Style(stroke="#000000", width=1.0, dashes=(10.0, 5.0))
+    (prim,) = prepare(_sheet(PathShape([("M", 0, 0), ("L", 100, 0)], style))).prims
+    starts = [c[0][0] for c in prim.contours]
+    ends = [c[-1][0] for c in prim.contours]
+    assert starts == [u(v) for v in (0, 15, 30, 45, 60, 75, 90)]
+    assert ends == [u(v) for v in (10, 25, 40, 55, 70, 85, 100)]
+    assert prim.style.dashes == ()
+
+
+def test_dash_offset_shifts_pattern() -> None:
+    style = Style(stroke="#000000", width=1.0, dashes=(10.0, 5.0), dash_offset=5.0)
+    (prim,) = prepare(_sheet(PathShape([("M", 0, 0), ("L", 30, 0)], style))).prims
+    # Starts half-way through the first dash.
+    assert [(c[0][0], c[-1][0]) for c in prim.contours] == [(0, u(5)), (u(10), u(20)), (u(25), u(30))]
+
+
+def test_dashes_keep_their_place_when_clipped() -> None:
+    style = Style(stroke="#000000", width=1.0, dashes=(10.0, 5.0))
+    line = PathShape([("M", 0, 50), ("L", 100, 50)], style)
+    prims = prepare(_sheet(Group(clip=_square(20, 0, 100, 100), children=[line]))).prims
+    # (pyclipper may return a piece reversed, so use its leftmost point)
+    starts = sorted(min(x for x, _ in c) for c in prims[0].contours)
+    # Same dashes as unclipped, minus those left of x=20 (the one at 15..25 is cut at 20).
+    assert starts == [u(v) for v in (20, 30, 45, 60, 75, 90)]
 
 
 def test_overlapping_outlines_merge_with_nonzero_rule() -> None:

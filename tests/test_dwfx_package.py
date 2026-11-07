@@ -170,30 +170,38 @@ def test_page_uses_only_what_autodesk_understands(tmp_path: Path, make) -> None:
     for el in inner:
         assert el.tag == NS_XPS + "Path"  # no nested canvases (clips, groups)
         data = el.get("Data")
-        assert re.fullmatch(r"(M-?\d+,-?\d+ L(-?\d+,-?\d+ ?)+( Z)? ?)+", data), data[:80]
+        # Only "M" and "L": a "Z"/"z" (close) makes Design Review fail the
+        # whole page (verified in Design Review).
+        assert re.fullmatch(r"(M-?\d+,-?\d+ L(-?\d+,-?\d+ ?)+ ?)+", data), data[:80]
         names.append(el.get("Name"))
     # Shapes are numbered 1, 2, 3... so W2X entries can refer to them.
     assert names == [f"N_{i}" for i in range(1, len(names) + 1)]
 
 
-def test_contour_sets_match_shapes(tmp_path: Path) -> None:
-    """A filled shape with several outlines (e.g. with a hole) needs a W2X
-    Contour_Set entry with the right counts, or holes come out filled."""
-    pdf = drawing_pdf(tmp_path / "in.pdf")  # contains a square with a hole
+def test_w2x_entries_for_fills_and_line_weights(tmp_path: Path) -> None:
+    """Verified in Design Review: every filled shape needs a W2X Polygon
+    entry (else concave fills are drawn wrongly), line thickness must be
+    given as W2X Line_Weight (else all lines are hairlines), and Contour_Set
+    with several outlines makes the page fail."""
+    pdf = drawing_pdf(tmp_path / "in.pdf")
     convert(pdf, tmp_path / "out.dwfx")
     z = zipfile.ZipFile(tmp_path / "out.dwfx")
-    paths = {
-        el.get("Name"): el.get("Data")
-        for el in ET.fromstring(z.read(_part(z, ".fpage"))).iter(NS_XPS + "Path")
-    }
-    sets = list(ET.fromstring(z.read(_part(z, "W2X.xml"))).iter("Contour_Set"))
-    assert sets, "the square with a hole should produce a contour set"
-    for entry in sets:
-        data = paths[entry.get("refName")]
-        outlines = data.split("M")[1:]
-        assert int(entry.get("Contours")) == len(outlines)
-        points = sum(len(re.findall(r"-?\d+,-?\d+", o)) + 1 for o in outlines)
-        assert int(entry.get("Count")) == points
+    paths = list(ET.fromstring(z.read(_part(z, ".fpage"))).iter(NS_XPS + "Path"))
+    w2x = ET.fromstring(z.read(_part(z, "W2X.xml")))
+    polygons = {e.get("refName") for e in w2x.iter("Polygon")}
+    fills = {p.get("Name") for p in paths if p.get("Fill")}
+    assert fills and polygons == fills
+    for p in paths:
+        if p.get("Fill"):
+            assert p.get("Data").count("M") == 1  # one outline per filled shape
+    assert not list(w2x.iter("Contour_Set"))
+    # Line weights: the weight in force for each line matches its thickness.
+    weights = {e.get("refName"): int(e.find("Line_Weight").get("Weight")) for e in w2x.iter("RenditionSync")}
+    current = None
+    for p in paths:
+        current = weights.get(p.get("Name"), current)
+        if p.get("Stroke"):
+            assert current == max(1, round(float(p.get("StrokeThickness")))), p.get("Name")
 
 
 def test_part_names_are_plain_ascii(tmp_path: Path) -> None:

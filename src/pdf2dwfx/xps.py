@@ -24,11 +24,19 @@ NAME_PREFIX = "N_"
 
 
 def _data(prim: Prim) -> str:
+    """Path data with only "M" and "L".
+
+    Closed outlines repeat their first point at the end instead of using
+    the "Z" (close) command: tested in Design Review, any path containing
+    "Z" or "z" makes the whole page fail with "There was a problem
+    displaying the page". Repeating the point draws the same shape.
+    """
     parts: list[str] = []
     for contour, closed in zip(prim.contours, prim.closed):
-        x0, y0 = contour[0]
-        rest = " ".join(f"{x},{y}" for x, y in contour[1:])
-        parts.append(f"M{x0},{y0} L{rest}" + (" Z" if closed else ""))
+        points = contour + [contour[0]] if closed else contour
+        x0, y0 = points[0]
+        rest = " ".join(f"{x},{y}" for x, y in points[1:])
+        parts.append(f"M{x0},{y0} L{rest}")
     return " ".join(parts)
 
 
