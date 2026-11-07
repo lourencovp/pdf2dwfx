@@ -53,6 +53,9 @@ Requires [uv](https://docs.astral.sh/uv/).
 ```sh
 uv sync          # install dependencies
 uv run pytest    # run the tests
+
+uv run pdf2dwfx drawing.pdf              # writes drawing.dwfx next to the PDF
+uv run pdf2dwfx drawing.pdf --page 3 -o sheet3.dwfx
 ```
 
 ### License

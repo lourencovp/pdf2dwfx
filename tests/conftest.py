@@ -6,6 +6,7 @@ them use the ``private_tests_dir`` fixture, which skips the test
 automatically when neither folder exists (for example in CI).
 """
 
+import socket
 from pathlib import Path
 
 import pytest
@@ -24,3 +25,21 @@ def private_tests_dir() -> Path:
         if candidate.is_dir():
             return candidate
     pytest.skip("private test drawings not available on this machine")
+
+
+class NetworkBlocked(RuntimeError):
+    pass
+
+
+@pytest.fixture(autouse=True)
+def _block_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The app must work fully offline: any attempt to reach the network
+    during a test fails loudly instead of silently succeeding."""
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise NetworkBlocked("network access attempted during tests")
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(socket.socket, "connect_ex", refuse)
+    monkeypatch.setattr(socket, "create_connection", refuse)
+    monkeypatch.setattr(socket, "getaddrinfo", refuse)

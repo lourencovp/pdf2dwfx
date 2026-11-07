@@ -1,0 +1,70 @@
+"""Compare how the PDF and our DWFx look.
+
+MuPDF (inside PyMuPDF) can also display XPS, and a DWFx is an XPS package.
+So we render the original PDF page and our DWFx sheet to pictures and count
+pixels that differ clearly. This catches misplaced, missing, mirrored or
+wrongly scaled geometry without needing Design Review.
+"""
+
+from pathlib import Path
+
+import pymupdf
+import pytest
+
+from pdf2dwfx.convert import convert
+from synthetic import A1_MM, A3_MM, drawing_pdf
+
+DPI = 50
+# MuPDF rounds XPS page sizes to whole XPS units (1/96 inch), so the two
+# pictures can differ by a pixel row/column; antialiasing adds a little more.
+MAX_DIFFERENT = 0.005  # at most 0.5 % of pixels
+
+
+def _difference(pdf: Path, dwfx: Path) -> float:
+    a = pymupdf.open(pdf)[0].get_pixmap(dpi=DPI, colorspace=pymupdf.csGRAY)
+    b = pymupdf.open(dwfx, filetype="xps")[0].get_pixmap(dpi=DPI, colorspace=pymupdf.csGRAY)
+    assert abs(a.width - b.width) <= 1 and abs(a.height - b.height) <= 1
+    w, h = min(a.width, b.width), min(a.height, b.height)
+    sa, sb = a.samples, b.samples
+    different = 0
+    for y in range(h):
+        ra, rb = y * a.width, y * b.width
+        row_a, row_b = sa[ra : ra + w], sb[rb : rb + w]
+        if row_a != row_b:
+            different += sum(1 for p, q in zip(row_a, row_b) if abs(p - q) > 64)
+    return different / (w * h)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"size_mm": A3_MM},
+        {"size_mm": A1_MM},
+        {"size_mm": (A3_MM[1], A3_MM[0])},  # landscape
+        {"size_mm": A3_MM, "rotation": 90},
+        {"size_mm": A3_MM, "rotation": 270},
+        {"size_mm": A3_MM, "cropbox_mm": (10, 20, 280, 400)},
+        {"size_mm": A3_MM, "rotation": 90, "cropbox_mm": (10, 20, 280, 400)},
+    ],
+    ids=["A3", "A1", "A3-landscape", "rot90", "rot270", "cropped", "rot90-cropped"],
+)
+def test_dwfx_looks_like_pdf(tmp_path: Path, options: dict) -> None:
+    pdf = drawing_pdf(tmp_path / "in.pdf", **options)
+    dwfx = tmp_path / "out.dwfx"
+    convert(pdf, dwfx)
+    assert _difference(pdf, dwfx) < MAX_DIFFERENT
+
+
+def test_private_sample_converts(tmp_path: Path, private_tests_dir: Path) -> None:
+    """Real drawing (only on the owner's machine). Text and raster images are
+    not converted yet, so we only check that it converts and opens with the
+    right paper size."""
+    pdf = private_tests_dir / "pdf" / "singlepdfpage.pdf"
+    if not pdf.exists():
+        pytest.skip("singlepdfpage.pdf not present")
+    dwfx = tmp_path / "out.dwfx"
+    convert(pdf, dwfx)
+    original = pymupdf.open(pdf)[0].rect
+    sheet = pymupdf.open(dwfx, filetype="xps")[0].rect
+    assert sheet.width == pytest.approx(original.width, abs=1)
+    assert sheet.height == pytest.approx(original.height, abs=1)
