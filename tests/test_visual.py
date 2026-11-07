@@ -12,7 +12,7 @@ import pymupdf
 import pytest
 
 from pdf2dwfx.convert import convert
-from synthetic import A1_MM, A3_MM, drawing_pdf
+from synthetic import A1_MM, A3_MM, drawing_pdf, features_pdf
 
 DPI = 50
 # MuPDF rounds XPS page sizes to whole XPS units (1/96 inch), so the two
@@ -55,16 +55,36 @@ def test_dwfx_looks_like_pdf(tmp_path: Path, options: dict) -> None:
     assert _difference(pdf, dwfx) < MAX_DIFFERENT
 
 
-def test_private_sample_converts(tmp_path: Path, private_tests_dir: Path) -> None:
-    """Real drawing (only on the owner's machine). Text and raster images are
-    not converted yet, so we only check that it converts and opens with the
-    right paper size."""
+@pytest.mark.parametrize("dpi", [50, 150])
+def test_special_features_look_like_pdf(tmp_path: Path, dpi: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Images (JPEG, transparent, rotated, mirrored, stencil), pattern
+    fills, gradients, transparency, stretched strokes, caps and dashes."""
+    monkeypatch.setattr(__import__(__name__), "DPI", dpi)
+    pdf = features_pdf(tmp_path / "in.pdf")
+    dwfx = tmp_path / "out.dwfx"
+    assert convert(pdf, dwfx) == []  # nothing reported as unsupported
+    assert _difference(pdf, dwfx) < MAX_DIFFERENT
+
+
+def _without_text(pdf: Path) -> pymupdf.Document:
+    """The PDF with its text removed (text is converted in milestone 3)."""
+    doc = pymupdf.open(pdf)
+    for page in doc:
+        page.add_redact_annot(page.rect)
+        page.apply_redactions(
+            images=pymupdf.PDF_REDACT_IMAGE_NONE, graphics=pymupdf.PDF_REDACT_LINE_ART_NONE
+        )
+    return doc
+
+
+def test_private_sample_looks_like_pdf(tmp_path: Path, private_tests_dir: Path) -> None:
+    """Real drawing (only on the owner's machine): everything except text
+    must match the PDF exactly."""
     pdf = private_tests_dir / "pdf" / "singlepdfpage.pdf"
     if not pdf.exists():
         pytest.skip("singlepdfpage.pdf not present")
     dwfx = tmp_path / "out.dwfx"
-    convert(pdf, dwfx)
-    original = pymupdf.open(pdf)[0].rect
-    sheet = pymupdf.open(dwfx, filetype="xps")[0].rect
-    assert sheet.width == pytest.approx(original.width, abs=1)
-    assert sheet.height == pytest.approx(original.height, abs=1)
+    assert convert(pdf, dwfx) == ["text (155x)"]
+    no_text = tmp_path / "no_text.pdf"
+    _without_text(pdf).save(no_text)
+    assert _difference(no_text, dwfx) < 0.0005

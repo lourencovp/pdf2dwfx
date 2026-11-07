@@ -9,7 +9,41 @@ import pymupdf
 # ISO paper sizes in millimetres (portrait).
 A1_MM = (594.0, 841.0)
 A3_MM = (297.0, 420.0)
+A4_MM = (210.0, 297.0)
 MM = 72 / 25.4  # points per millimetre
+
+
+def _append(page: pymupdf.Page, content: bytes) -> None:
+    """Append raw PDF drawing operators to a page (PDF coordinates:
+    origin bottom-left, y up). Used for features PyMuPDF has no call for."""
+    doc = page.parent
+    if not page.get_contents():
+        page.draw_rect(pymupdf.Rect(0, 0, 0, 0), color=None, width=0)  # creates a content stream
+    # Append to the last content stream. (Do not use page.clean_contents():
+    # it deletes resources that are registered but not used yet.)
+    xref = page.get_contents()[-1]
+    doc.update_stream(xref, doc.xref_stream(xref) + b"\nq\n" + content + b"\nQ\n")
+
+
+def _add_resource(page: pymupdf.Page, kind: str, name: str, xref: int) -> None:
+    """Register an object (image, pattern...) under a name in the page's resources."""
+    doc = page.parent
+    # /Resources may be stored inline in the page or as a separate object.
+    res_type, res_value = doc.xref_get_key(page.xref, "Resources")
+    if res_type == "xref":
+        owner, key = int(res_value.split()[0]), kind
+    else:
+        owner, key = page.xref, f"Resources/{kind}"
+    sub_type, sub_value = doc.xref_get_key(owner, key)
+    if sub_type == "xref":  # the sub-dictionary is itself a separate object
+        owner, key = int(sub_value.split()[0]), None
+        sub_type, sub_value = "dict", doc.xref_object(owner, compressed=True)
+    entries = sub_value[2:-2] if sub_type == "dict" else ""
+    new = f"<<{entries}/{name} {xref} 0 R>>"
+    if key is None:
+        doc.update_object(owner, new)
+    else:
+        doc.xref_set_key(owner, key, new)
 
 
 def drawing_pdf(
@@ -45,17 +79,13 @@ def drawing_pdf(
     page.draw_rect(pymupdf.Rect(450, 520, 560, 640), color=None, fill=(0.6, 0.6, 0.6))
     page.draw_rect(pymupdf.Rect(580, 520, 680, 640), color=(0, 0, 0), fill=(0.2, 0.4, 0.9), width=1)
 
-    # Line hatch clipped to a region, as CAD hatches usually are. PyMuPDF has
-    # no drawing call for clipping, so we append raw PDF operators
-    # (PDF coordinates: origin bottom-left, y up).
-    page.clean_contents()
-    xref = page.get_contents()[0]
-    hatch = [b"q 450 %.2f 230 120 re W n 0.3 w 0 0 0 RG" % (h - 780)]
+    # Line hatch clipped to a region, as CAD hatches usually are.
+    hatch = [b"450 %.2f 230 120 re W n 0.3 w 0 0 0 RG" % (h - 780)]
     for i in range(-20, 40):
         x = 450 + i * 8
         hatch.append(b"%d %.2f m %d %.2f l" % (x, h - 660, x + 120, h - 780))
-    hatch.append(b"S Q")
-    doc.update_stream(xref, doc.xref_stream(xref) + b"\n" + b"\n".join(hatch))
+    hatch.append(b"S")
+    _append(page, b"\n".join(hatch))
 
     # A filled square with a square hole (even-odd).
     shape = page.new_shape()
@@ -68,5 +98,101 @@ def drawing_pdf(
         page.set_cropbox(pymupdf.Rect(*(v * MM for v in cropbox_mm)))
     if rotation:
         page.set_rotation(rotation)
+    doc.save(path)
+    return path
+
+
+def _photo(width: int, height: int, alpha: bool = False) -> pymupdf.Pixmap:
+    """A small colourful picture with a clear orientation (so flips show)."""
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, width, height), alpha)
+    for y in range(height):
+        for x in range(width):
+            rgb = (x * 255 // width, y * 255 // height, 255 if x < width // 4 else 60)
+            pix.set_pixel(x, y, rgb + ((255 if y < height // 2 else 90),) if alpha else rgb)
+    return pix
+
+
+def features_pdf(path: Path) -> Path:
+    """One A4 page using the less common PDF features the reader supports."""
+    w, h = A4_MM[0] * MM, A4_MM[1] * MM
+    doc = pymupdf.open()
+    page = doc.new_page(width=w, height=h)
+
+    # 1. Lines underneath a JPEG photo, then lines on top of it (draw order).
+    for i in range(8):
+        page.draw_line((30, 40 + i * 8), (200, 40 + i * 8), color=(0, 0, 0), width=1.5)
+    jpeg = _photo(400, 300).tobytes("jpeg", jpg_quality=95)  # ~290 dpi: stays JPEG
+    page.insert_image(pymupdf.Rect(60, 30, 160, 105), stream=jpeg)
+    page.draw_line((40, 110), (190, 30), color=(1, 0, 0), width=2)
+
+    # 2. A transparent PNG (soft mask) over a fill, and a rotated copy.
+    page.draw_rect(pymupdf.Rect(230, 30, 380, 110), color=None, fill=(0, 0.6, 0))
+    png = _photo(40, 30, alpha=True).tobytes("png")
+    page.insert_image(pymupdf.Rect(250, 40, 330, 100), stream=png)
+    page.insert_image(pymupdf.Rect(450, 30, 540, 150), stream=png, rotate=90)
+
+    # 3. A mirrored image, placed with a raw transformation.
+    img_xref = page.insert_image(pymupdf.Rect(0, 0, 1, 1), stream=jpeg)
+    names = [x[7] for x in page.get_images(full=True) if x[0] == img_xref]
+    _append(page, b"-100 0 0 60 160 %.2f cm /%s Do" % (h - 240, names[0].encode()))
+
+    # 4. A stencil mask: a 1-bit shape painted in one colour.
+    stencil = doc.get_new_xref()
+    doc.update_object(
+        stencil,
+        "<</Type/XObject/Subtype/Image/Width 8/Height 8/ImageMask true/BitsPerComponent 1>>",
+    )
+    doc.update_stream(stencil, bytes([0x18, 0x3C, 0x7E, 0xFF, 0xFF, 0x7E, 0x3C, 0x18]))
+    _add_resource(page, "XObject", "Stn", stencil)
+    _append(page, b"0.9 0.4 0 rg 80 0 0 80 230 %.2f cm /Stn Do" % (h - 260))
+
+    # 5. A pattern-fill hatch (PDF tiling pattern), clipped to a triangle.
+    pattern = doc.get_new_xref()
+    doc.update_object(
+        pattern,
+        "<</Type/Pattern/PatternType 1/PaintType 1/TilingType 1"
+        "/BBox[0 0 12 12]/XStep 12/YStep 12/Resources<<>>>>",
+    )
+    doc.update_stream(pattern, b"0.6 w 0 0 1 RG 0 0 m 12 12 l S 0 6 m 6 12 l S")
+    _add_resource(page, "Pattern", "Hatch", pattern)
+    _append(page, b"/Pattern cs /Hatch scn 360 %.2f m 560 %.2f l 460 %.2f l f" % (h - 380, h - 380, h - 220))
+
+    # 6. A colour gradient (shading), clipped to a circle-ish shape.
+    shading = doc.get_new_xref()
+    doc.update_object(
+        shading,
+        "<</ShadingType 2/ColorSpace/DeviceRGB/Coords[40 0 200 0]/Extend[true true]"
+        "/Function<</FunctionType 2/Domain[0 1]/C0[1 1 0]/C1[0 0 1]/N 1>>>>",
+    )
+    _add_resource(page, "Shading", "Grad", shading)
+    _append(page, b"40 %.2f 160 100 re W n /Grad sh" % (h - 400))
+
+    # 7. Transparency: semi-transparent fills overlapping.
+    gs = doc.get_new_xref()
+    doc.update_object(gs, "<</Type/ExtGState/ca 0.5/CA 0.5>>")
+    _add_resource(page, "ExtGState", "Half", gs)
+    _append(
+        page,
+        b"/Half gs 1 0 0 rg 40 %.2f 100 60 re f 0 0 1 rg 90 %.2f 100 60 re f"
+        % (h - 520, h - 550),
+    )
+
+    # 8. A stroke stretched 3x vertically: thickness must stretch too.
+    _append(page, b"1 0 0 3 0 0 cm 2 w 0 0 0 RG 300 %.2f m 380 %.2f l 340 %.2f l h S"
+            % ((h - 520) / 3, (h - 520) / 3, (h - 440) / 3))
+
+    # 9. Caps, joins and dashes on thick lines.
+    _append(
+        page,
+        b"8 w 0 0 0 RG "
+        b"0 J 0 j 420 %.2f m 470 %.2f l 520 %.2f l S "
+        b"1 J 1 j 420 %.2f m 470 %.2f l 520 %.2f l S "
+        b"2 J 2 j [12 6] 3 d 420 %.2f m 470 %.2f l 520 %.2f l S"
+        % (h - 460, h - 500, h - 460, h - 520, h - 560, h - 520, h - 580, h - 620, h - 580),
+    )
+
+    # 10. A hairline (width 0) and a CMYK colour.
+    _append(page, b"0 w 0 1 1 0 K 40 %.2f m 550 %.2f l S" % (h - 650, h - 660))
+
     doc.save(path)
     return path

@@ -24,11 +24,13 @@ def main(argv: list[str] | None = None) -> int:
 
     output: Path = args.output or args.pdf.with_suffix(".dwfx")
     try:
-        convert(args.pdf, output, args.page)
+        warnings = convert(args.pdf, output, args.page)
     except (OSError, ValueError, RuntimeError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
     print(f"Written: {output}")
+    if warnings:
+        print("Not converted (yet): " + ", ".join(warnings))
     return 0
 
 

@@ -33,6 +33,9 @@ REL_DWF_SEQUENCE = "http://schemas.autodesk.com/dwfx/2007/relationships/document
 REL_DWF_DOCUMENT = "http://schemas.autodesk.com/dwfx/2007/relationships/document"
 REL_DWF_PROPERTIES = "http://schemas.autodesk.com/dwfx/2007/relationships/dwfproperties"
 REL_DWF_SECTION = "http://schemas.autodesk.com/dwfx/2007/relationships/section"
+REL_DWF_REQUIRED = "http://schemas.autodesk.com/dwfx/2007/relationships/requiredresource"
+REL_DWF_RASTER = "http://schemas.autodesk.com/dwfx/2007/relationships/rasterreferenceresource"
+REL_XPS_REQUIRED = "http://schemas.microsoft.com/xps/2005/06/required-resource"
 
 # --- Content (MIME) types ---------------------------------------------------
 DEFAULT_TYPES = {
@@ -42,7 +45,10 @@ DEFAULT_TYPES = {
     "fdoc": "application/vnd.ms-package.xps-fixeddocument+xml",
     "fpage": "application/vnd.ms-package.xps-fixedpage+xml",
     "dwfseq": "application/vnd.adsk-package.dwfx-dwfdocumentsequence+xml",
+    "png": "image/png",
+    "jpg": "image/jpeg",
 }
+IMAGE_MIME = {"png": "image/png", "jpg": "image/jpeg"}
 CORE_PROPS_TYPE = "application/vnd.openxmlformats-package.core-properties+xml"
 # How the DWF manifest labels the XPS page that carries a sheet's graphics.
 FIXEDPAGE_DWF_MIME = "application/vnd.adsk-package.dwfx-fixedpage+xml"
@@ -84,14 +90,21 @@ def _matrix_4x4(sheet: Sheet) -> str:
     DWF writes 2D transforms as a 4x4 matrix in row-vector order.
     """
     k = 25.4 / 72
-    a, b, c, d, e, f = (v * k for v in sheet.transform)
-    values = (a, b, 0, 0, c, d, 0, 0, 0, 0, 1, 0, e, f, 0, 1)
+    values = (k, 0, 0, 0, 0, k, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)
     return " ".join(fmt(v, 10) for v in values)
 
 
-def _descriptor(sheet: Sheet, order: int, fpage_part: str) -> bytes:
-    """The DWF sheet description: name, paper size and graphics resource."""
+def _descriptor(sheet: Sheet, order: int, fpage_part: str, images: list[tuple[str, str]]) -> bytes:
+    """The DWF sheet description: name, paper size and graphics resource.
+
+    ``images``: (part name, mime type) of each picture the sheet uses,
+    listed as "raster reference" resources like AutoCAD does."""
     w, h = fmt(sheet.width_mm, 6), fmt(sheet.height_mm, 6)
+    image_xml = "".join(
+        f'<ePlot:ImageResource role="raster reference" mime="{mime}" href="{part}" '
+        f'objectId="{_guid()}"/>'
+        for part, mime in images
+    )
     return (
         f'<ePlot:Page xmlns:ePlot="DWF-ePlot:1.2" version="1.2" objectId="{_guid()}" '
         f'name={quoteattr(sheet.title)} plotOrder="{order}" color="128 128 128">'
@@ -100,7 +113,7 @@ def _descriptor(sheet: Sheet, order: int, fpage_part: str) -> bytes:
         f'<ePlot:GraphicResource role="2d streaming graphics" mime="{FIXEDPAGE_DWF_MIME}" '
         f'href="{fpage_part}?{GRAPHICS_ID}" internalId="{GRAPHICS_ID}" objectId="{_guid()}" '
         f'transform="{_matrix_4x4(sheet)}"/>'
-        "</ePlot:Resources></ePlot:Page>"
+        f"{image_xml}</ePlot:Resources></ePlot:Page>"
     ).encode("utf-8")
 
 
@@ -111,21 +124,36 @@ def build_parts(sheets: Sequence[Sheet]) -> dict[str, bytes]:
     doc = f"/dwf/documents/{_guid()}"
     parts: dict[str, bytes] = {}
 
-    sections: list[tuple[str, str, str, Sheet]] = []  # (name, descriptor, fpage, sheet)
+    # (name, descriptor, fpage, sheet, [(image part, mime)])
+    sections: list[tuple[str, str, str, Sheet, list[tuple[str, str]]]] = []
     for order, sheet in enumerate(sheets, start=1):
         name = f"com.autodesk.dwf.ePlot_{_guid()}"
         folder = f"{doc}/sections/{name}"
         descriptor, fpage = f"{folder}/descriptor.xml", f"{folder}/FixedPage.fpage"
-        parts[descriptor] = _descriptor(sheet, order, fpage)
-        parts[fpage] = fixed_page(sheet, GRAPHICS_ID)
-        sections.append((name, descriptor, fpage, sheet))
+        image_uris: dict[str, str] = {}
+        images: list[tuple[str, str]] = []
+        for key, image in sheet.images.items():
+            part = f"{folder}/{_guid()}.{image.ext}"
+            parts[part] = image.data
+            image_uris[key] = part
+            images.append((part, IMAGE_MIME[image.ext]))
+        parts[descriptor] = _descriptor(sheet, order, fpage, images)
+        parts[fpage] = fixed_page(sheet, GRAPHICS_ID, image_uris)
+        if images:
+            # XPS needs each picture declared as a resource of its page;
+            # DWF declares it for the sheet description as well.
+            parts[_rels_path(fpage)] = _relationships([(p, REL_XPS_REQUIRED) for p, _ in images])
+            parts[_rels_path(descriptor)] = _relationships(
+                [rel for p, _ in images for rel in ((p, REL_DWF_REQUIRED), (p, REL_DWF_RASTER))]
+            )
+        sections.append((name, descriptor, fpage, sheet, images))
 
     # --- XPS side: sequence -> document -> pages ---
     fdoc = f"{doc}/FixedDocument.fdoc"
     pages = "".join(
         f'<PageContent Source="{fpage}" Width="{fmt(s.width_pt * 96 / 72, 6)}" '
         f'Height="{fmt(s.height_pt * 96 / 72, 6)}"/>'
-        for _, _, fpage, s in sections
+        for _, _, fpage, s, _ in sections
     )
     parts[fdoc] = (
         f'{XML_DECL}<FixedDocument xmlns="http://schemas.microsoft.com/xps/2005/06">'
@@ -145,8 +173,12 @@ def build_parts(sheets: Sequence[Sheet]) -> dict[str, bytes]:
         f'<dwf:Resource role="2d streaming graphics" mime="{FIXEDPAGE_DWF_MIME}" '
         f'href="{fpage}?{GRAPHICS_ID}"/>'
         f'<dwf:Resource role="descriptor" mime="text/xml" href="{descriptor}"/>'
-        "</dwf:Toc></dwf:Section>"
-        for name, descriptor, fpage, s in sections
+        + "".join(
+            f'<dwf:Resource role="raster reference" mime="{mime}" href="{part}"/>'
+            for part, mime in images
+        )
+        + "</dwf:Toc></dwf:Section>"
+        for name, descriptor, fpage, s, images in sections
     )
     parts[manifest] = (
         f'<dwf:Manifest xmlns:dwf="DWF-Manifest:6.0" version="6.0" objectId="{_guid()}">'
@@ -156,7 +188,7 @@ def build_parts(sheets: Sequence[Sheet]) -> dict[str, bytes]:
     ).encode("utf-8")
     parts[_rels_path(manifest)] = _relationships(
         [(properties, REL_DWF_PROPERTIES)]
-        + [(descriptor, REL_DWF_SECTION) for _, descriptor, _, _ in sections]
+        + [(descriptor, REL_DWF_SECTION) for _, descriptor, _, _, _ in sections]
     )
     parts[properties] = (
         f"{XML_DECL}<DWFProperties>"

@@ -7,11 +7,14 @@ from pathlib import Path
 import pymupdf
 
 from .dwfx import write_dwfx
-from .pdf_reader import read_page
+from .pdf_reader import read_page, unsupported_summary
 
 
-def convert(pdf_path: Path, dwfx_path: Path, page_number: int = 1) -> None:
-    """Convert one page (counting from 1) of a PDF into a one-sheet DWFx."""
+def convert(pdf_path: Path, dwfx_path: Path, page_number: int = 1) -> list[str]:
+    """Convert one page (counting from 1) of a PDF into a one-sheet DWFx.
+
+    Returns warnings: PDF features on the page that could not be reproduced.
+    """
     with pymupdf.open(pdf_path) as doc:
         if not 1 <= page_number <= doc.page_count:
             raise ValueError(
@@ -19,3 +22,4 @@ def convert(pdf_path: Path, dwfx_path: Path, page_number: int = 1) -> None:
             )
         sheet = read_page(doc[page_number - 1])
     write_dwfx(dwfx_path, [sheet])
+    return unsupported_summary(sheet)
