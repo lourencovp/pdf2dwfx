@@ -42,6 +42,8 @@ MAX_SHADING_PIXELS = 16_000_000  # lower the resolution for huge gradients
 MIN_CRISP_DPI = 150
 TARGET_CRISP_DPI = 300
 MAX_UPSCALED_PIXELS = 16_000_000
+# Joins nested PDF layer names into one Design Review layer name.
+LAYER_SEPARATOR = " / "
 # Safety limit when expanding repeating pattern fills into geometry.
 MAX_PATTERN_TILES = 100_000
 
@@ -320,7 +322,7 @@ def _m(ctm: Any) -> Matrix:
 
 
 class _Recorder(mupdf.FzDevice2):
-    def __init__(self, sheet: Sheet, page_transform: Matrix) -> None:
+    def __init__(self, sheet: Sheet, page_transform: Matrix, layer_tree: "LayerTree") -> None:
         super().__init__()
         for name in (
             "fill_path", "stroke_path", "clip_path", "clip_stroke_path",
@@ -340,6 +342,8 @@ class _Recorder(mupdf.FzDevice2):
         self.kinds: list[str] = ["root"]
         self.tiles: list[tuple[Any, Any, float, float, Matrix]] = []
         self.layers: list[str] = []
+        self.layer_tree = layer_tree
+        self.layer_cache: dict[tuple[str, ...], str] = {}
         self.clip_boxes: dict[int, pymupdf.Rect] = {}  # id(clip group) -> bounding box
         # Open "clip by image" groups: id(group) -> [mask address, used?]
         self.image_clips: dict[int, list] = {}
@@ -348,7 +352,13 @@ class _Recorder(mupdf.FzDevice2):
 
     @property
     def layer(self) -> str | None:
-        return self.layers[-1] if self.layers else None
+        """The current PDF layer as its full path, e.g. "02_INT DESIGN / LIGHTING / LED"."""
+        names = tuple(n for n in self.layers if n)
+        if not names:
+            return None
+        if names not in self.layer_cache:
+            self.layer_cache[names] = LAYER_SEPARATOR.join(self.layer_tree.resolve(names))
+        return self.layer_cache[names]
 
     def _sheet_matrix(self, ctm: Any) -> Matrix:
         return concat(_m(ctm), self.page_transform)
@@ -578,6 +588,49 @@ class _Recorder(mupdf.FzDevice2):
             self.layers.pop()
 
 
+class LayerTree:
+    """The PDF's own layer tree (as PDF viewers show it), used to name layers.
+
+    CAD programs nest layers, and the same short name often appears under
+    different parents ("LED" under both "KITCHEN" and "LIGHTING"). Design
+    Review shows a flat list, so each layer is named by its full path in
+    the tree (owner's choice).
+
+    While drawing, MuPDF only tells us the names of the layers that enclose
+    a drawing element, innermost last, e.g. ("01_VISUALARQ", "Slabs",
+    "00_DOCUMENTATION", "HATCH", "White") for a hatch on layer White that
+    belongs to a slab. An element can be on only one Design Review layer;
+    we choose its own (innermost) layer: the tree path that matches the
+    end of that list, here "00_DOCUMENTATION / HATCH / White".
+    """
+
+    def __init__(self, ui_configs: list[dict]) -> None:
+        self.paths_by_name: dict[str, list[tuple[str, ...]]] = {}
+        parents: list[str] = []
+        for item in ui_configs:
+            depth = item.get("depth", 0)
+            parents = parents[:depth]
+            path = (*parents, item["text"])
+            if item.get("type") != "label":  # labels are headings, not layers
+                self.paths_by_name.setdefault(item["text"], []).append(path)
+            parents.append(item["text"])
+
+    def resolve(self, enclosing: tuple[str, ...]) -> tuple[str, ...]:
+        candidates = self.paths_by_name.get(enclosing[-1], [])
+        # Best: a tree path that is exactly the end of the enclosing list.
+        tails = [c for c in candidates if enclosing[-len(c) :] == c]
+        if tails:
+            return max(tails, key=len)
+        # Next: a tree path whose layers all enclose the element, in order.
+        for c in sorted(candidates, key=len, reverse=True):
+            it = iter(enclosing)
+            if all(name in it for name in c):
+                return c
+        if len(candidates) == 1:
+            return candidates[0]
+        return (enclosing[-1],)  # no tree in the PDF: the layer's own name
+
+
 def _tile_offsets(area: Any, view: Any, xstep: float, ystep: float, ctm: Matrix) -> list[tuple[float, float]]:
     """Positions (in page space) of every tile copy needed to cover ``area``.
 
@@ -612,11 +665,17 @@ def read_page(page: pymupdf.Page, title: str | None = None) -> Sheet:
     # MuPDF's page space already has the page rotation applied and y going
     # down; we only move the origin to the sheet's top-left corner.
     page_transform: Matrix = (1.0, 0.0, 0.0, 1.0, -bounds.x0, -bounds.y0)
-    device = _Recorder(sheet, page_transform)
+    device = _Recorder(sheet, page_transform, LayerTree(page.parent.layer_ui_configs()))
     try:
         mupdf.fz_run_page(page.this, device, mupdf.FzMatrix(), mupdf.FzCookie())
     finally:
         mupdf.fz_close_device(device)
+    # Layers switched off in the PDF are not drawn (as in a PDF viewer), so
+    # they cannot be switched on in Design Review. Say so instead of
+    # silently leaving them out.
+    hidden = sum(1 for ocg in page.parent.get_ocgs().values() if not ocg["on"])
+    if hidden:
+        sheet.unsupported["layers switched off in the PDF (left out)"] += hidden
     return sheet
 
 

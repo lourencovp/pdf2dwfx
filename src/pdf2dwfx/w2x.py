@@ -19,15 +19,24 @@ Every rule below was verified by opening test files in Design Review:
   every picture, with its box in Autodesk's coordinates (y up from the
   bottom of the sheet). The picture itself is a brush in the separate
   brush list (see xps.resource_dictionary).
+* ``Layer`` (inside ``RenditionSync``) whenever the layer changes: with its
+  name and a number the first time, by number only afterwards. Design
+  Review then lists the layers and can switch each one on and off.
 * NOT ``Contour_Set`` with several outlines: it makes the page fail.
   Shapes with holes are cut into hole-free pieces instead (prepare.py).
 """
 
 from __future__ import annotations
 
+from xml.sax.saxutils import quoteattr
+
 from .pdf_reader import fmt
 from .prepare import UNITS_PER_MM, Prepared
 from .xps import NAME_PREFIX, shape_name
+
+# Layer for everything outside any PDF layer (and for PDFs without layers):
+# "0" is the usual name of the default layer in CAD programs.
+DEFAULT_LAYER = "0"
 
 
 def line_weight(width: float) -> int:
@@ -50,8 +59,28 @@ def w2x(prepared: Prepared, sources: dict[str, str] | None = None) -> bytes:
         f'Area="0,0,{prepared.width_units},{prepared.height_units}"/>',
     ]
     current_weight: int | None = None
+    current_layer: str | None = None
+    layer_numbers: dict[str, int] = {}
     for index, prim in enumerate(prepared.prims, start=1):
         name = shape_name(index)
+        # Settings that change at this shape, written before it like AutoCAD.
+        changes: list[str] = []
+        layer = prim.layer or DEFAULT_LAYER
+        if layer != current_layer:
+            if layer in layer_numbers:
+                changes.append(f'<Layer Number="{layer_numbers[layer]}"/>')
+            else:
+                # First use: name the layer; later switches use its number.
+                layer_numbers[layer] = len(layer_numbers) + 1
+                changes.append(f'<Layer Name={quoteattr(layer)} Number="{layer_numbers[layer]}"/>')
+            current_layer = layer
+        if prim.kind == "stroke":
+            weight = line_weight(prim.style.width)
+            if weight != current_weight:
+                changes.insert(0, f'<Line_Weight Weight="{weight}"/>')
+                current_weight = weight
+        if changes:
+            out.append(f'<RenditionSync refName="{name}">{"".join(changes)}</RenditionSync>')
         if prim.kind == "fill":
             out.append(f'<Polygon refName="{name}"/>')
         elif prim.kind == "image":
@@ -67,10 +96,5 @@ def w2x(prepared: Prepared, sources: dict[str, str] | None = None) -> bytes:
                 f'<{element} refName="{name}" Format="{fmt_code}" Ref="{(sources or {})[img.key]}" '  # type: ignore[union-attr]
                 f'Width="{img.data.width}" Height="{img.data.height}" Area="{x0},{h - y1},{x1},{h - y0}"/>'  # type: ignore[union-attr]
             )
-        else:
-            weight = line_weight(prim.style.width)
-            if weight != current_weight:
-                out.append(f'<RenditionSync refName="{name}"><Line_Weight Weight="{weight}"/></RenditionSync>')
-                current_weight = weight
     out.append("</W2X>")
     return "".join(out).encode("utf-8")

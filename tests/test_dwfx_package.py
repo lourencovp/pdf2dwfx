@@ -203,7 +203,11 @@ def test_w2x_entries_for_fills_and_line_weights(tmp_path: Path) -> None:
             assert p.get("Data").count("M") == 1  # one outline per filled shape
     assert not list(w2x.iter("Contour_Set"))
     # Line weights: the weight in force for each line matches its thickness.
-    weights = {e.get("refName"): int(e.find("Line_Weight").get("Weight")) for e in w2x.iter("RenditionSync")}
+    weights = {
+        e.get("refName"): int(e.find("Line_Weight").get("Weight"))
+        for e in w2x.iter("RenditionSync")
+        if e.find("Line_Weight") is not None  # some entries only change the layer
+    }
     current = None
     for p in paths:
         current = weights.get(p.get("Name"), current)

@@ -205,3 +205,43 @@ def features_pdf(path: Path, pictures: bool = True, stretched: bool = True) -> P
 
     doc.save(path)
     return path
+
+
+def layers_pdf(path: Path, with_hidden: bool = False) -> Path:
+    """A page whose lines sit on PDF layers (optional content groups), the
+    way CAD programs export them: a layer tree in which the short name
+    "LED" exists twice (under FURNITURE and under LIGHTING), and nested
+    marked content listing each element's enclosing layers."""
+    w, h = A4_MM[0] * MM, A4_MM[1] * MM
+    doc = pymupdf.open()
+    page = doc.new_page(width=w, height=h)
+    keys = ["WALLS", "FURNITURE", "LED_1", "LIGHTING", "LED_2"] + (["HIDDEN"] if with_hidden else [])
+    xref = {k: doc.add_ocg(k.split("_")[0], on=(k != "HIDDEN")) for k in keys}
+    for i, k in enumerate(keys):
+        _add_resource(page, "Properties", f"OC{i}", xref[k])
+    tag = {k: f"/OC{i}".encode() for i, k in enumerate(keys)}
+    # The layer tree as PDF viewers show it (/Order): children follow their parent.
+    order = (
+        f"[{xref['WALLS']} 0 R {xref['FURNITURE']} 0 R [{xref['LED_1']} 0 R] "
+        f"{xref['LIGHTING']} 0 R [{xref['LED_2']} 0 R]"
+        + (f" {xref['HIDDEN']} 0 R" if with_hidden else "")
+        + "]"
+    )
+    doc.xref_set_key(doc.pdf_catalog(), "OCProperties/D/Order", order)
+
+    def line(y: float, color: bytes) -> bytes:
+        return b"%s RG 2 w 50 %.2f m 500 %.2f l S" % (color, h - y, h - y)
+
+    content = [
+        line(100, b"0 0 0"),  # outside any layer -> default layer
+        b"/OC %s BDC " % tag["WALLS"] + line(200, b"1 0 0") + b" EMC",
+        b"/OC %s BDC /OC %s BDC " % (tag["FURNITURE"], tag["LED_1"]) + line(300, b"0 0.6 0") + b" EMC EMC",
+        b"/OC %s BDC /OC %s BDC " % (tag["LIGHTING"], tag["LED_2"]) + line(400, b"0 0 1") + b" EMC EMC",
+        # An element on WALLS drawn inside a LIGHTING element: its own layer wins.
+        b"/OC %s BDC /OC %s BDC " % (tag["LIGHTING"], tag["WALLS"]) + line(500, b"1 0 0") + b" EMC EMC",
+    ]
+    if with_hidden:
+        content.append(b"/OC %s BDC " % tag["HIDDEN"] + line(600, b"1 0 1") + b" EMC")
+    _append(page, b"\n".join(content))
+    doc.save(path)
+    return path
