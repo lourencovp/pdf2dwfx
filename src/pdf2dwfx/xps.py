@@ -116,6 +116,14 @@ def fixed_page(sheet: Sheet, canvas_name: str, image_uris: Mapping[str, str]) ->
     points at it (``FixedPage.fpage?<canvas_name>``), exactly as AutoCAD's
     DWFx files do. Its transform converts our point coordinates into XPS
     units. ``image_uris`` gives the package location of each image.
+
+    Autodesk viewers cut the *contents* of that named canvas out of the page
+    and parse them as a stand-alone XML document (see the DWF Toolkit's
+    FixedPageResourceExtractor). A stand-alone document needs exactly one
+    root element that declares the XPS namespace, so -- like AutoCAD --
+    everything goes inside a single inner canvas with its own ``xmlns``.
+    Without it Design Review reports "There was a problem displaying the
+    page", while other XPS viewers show the page fine.
     """
     k = fmt(PT_TO_XPS, 10)
     out: list[str] = [
@@ -123,7 +131,8 @@ def fixed_page(sheet: Sheet, canvas_name: str, image_uris: Mapping[str, str]) ->
         f'<FixedPage xmlns="{XPS_NS}" Width="{fmt(sheet.width_pt * PT_TO_XPS, 6)}" '
         f'Height="{fmt(sheet.height_pt * PT_TO_XPS, 6)}" xml:lang="und">',
         f'<Canvas Name="{canvas_name}" RenderTransform="{k},0,0,{k},0,0">',
+        f'<Canvas xmlns="{XPS_NS}">',
     ]
     _Writer(sheet, image_uris).children(sheet.root.children, out)
-    out.append("</Canvas></FixedPage>")
+    out.append("</Canvas></Canvas></FixedPage>")
     return "".join(out).encode("utf-8")
