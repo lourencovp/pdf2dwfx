@@ -124,7 +124,7 @@ def test_convert_from_window(app: QApplication, two_pages: Path, tmp_path: Path)
     with zipfile.ZipFile(out) as z:
         assert sum(n.endswith("FixedPage.fpage") for n in z.namelist()) == 2
     assert told and told[0].startswith(f"Written: {out}")
-    assert window.progress.value() == window.progress.maximum() == 4  # 2 pages read + 2 prepared
+    assert window.progress.value() == window.progress.maximum() == 2  # one step per page
 
 
 def test_page_screen_opens_with_the_page_scale(app: QApplication, two_pages: Path) -> None:

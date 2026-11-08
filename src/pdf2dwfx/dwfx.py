@@ -18,7 +18,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 import zipfile
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from xml.sax.saxutils import quoteattr
 
@@ -26,7 +26,7 @@ from . import __version__
 from .model import Sheet
 from .fonts import obfuscate
 from .pdf_reader import fmt
-from .prepare import UNITS_PER_MM, Prepared, prepare
+from .prepare import UNITS_PER_MM, prepare
 from .w2x import w2x
 from .xps import UNITS_TO_XPS, fixed_page, resource_dictionary
 
@@ -145,82 +145,110 @@ def _descriptor(sheet: Sheet, order: int, fpage_part: str, resources: list[_Reso
     ).encode("utf-8")
 
 
-def build_parts(sheets: Sequence[Sheet], sheet_done: Callable[[], None] | None = None) -> dict[str, bytes]:
-    """Return every part of the package as {part name: content}.
+@dataclass
+class Section:
+    """One sheet, ready to go into the package: its files and what the
+    package-wide lists (manifest, page list, content types) need to know.
 
-    ``sheet_done`` is called after each sheet (for a progress bar)."""
-    if not sheets:
-        raise ValueError("a DWFx file needs at least one sheet")
-    doc = f"/dwf/documents/{_guid()}"
+    Sheets are made independently of each other (possibly at the same time
+    in several processes, see convert.py) and then put together by
+    ``package_parts``."""
+
+    name: str
+    descriptor: str
+    fpage: str
+    resources: list[_Resource]
+    title: str
+    width: str  # page size in XPS units, written out
+    height: str
+    parts: dict[str, bytes]
+    overrides: dict[str, str]  # content types of parts that need one
+
+
+def document_folder() -> str:
+    """Where the sheets of one package live; every Section needs it."""
+    return f"/dwf/documents/{_guid()}"
+
+
+def build_section(doc: str, order: int, sheet: Sheet) -> Section:
+    """Prepare one sheet and write all its files (page, W2X, pictures, fonts)."""
     parts: dict[str, bytes] = {}
+    overrides: dict[str, str] = {}
+    name = f"com.autodesk.dwf.ePlot_{_guid()}"
+    folder = f"{doc}/sections/{name}"
+    descriptor = f"{folder}/descriptor.xml"
+    fpage = f"{folder}/FixedPage.fpage"
+    w2x_part = f"{folder}/W2X.xml"
+    prepared = prepare(sheet)
 
-    overrides: dict[str, str] = {"/CoreProperties.xml": CORE_PROPS_TYPE}
-    # (name, descriptor, fpage, resources, sheet, prepared)
-    sections: list[tuple[str, str, str, list[_Resource], Sheet, Prepared]] = []
-    for order, sheet in enumerate(sheets, start=1):
-        name = f"com.autodesk.dwf.ePlot_{_guid()}"
-        folder = f"{doc}/sections/{name}"
-        descriptor = f"{folder}/descriptor.xml"
-        fpage = f"{folder}/FixedPage.fpage"
-        w2x_part = f"{folder}/W2X.xml"
-        prepared = prepare(sheet)
-        if sheet_done:
-            sheet_done()
+    # Pictures: each distinct picture stored once, next to the page.
+    sources: dict[str, str] = {}  # picture key -> "./file" (relative to the page)
+    image_parts: list[tuple[str, str]] = []  # (part, ext)
+    for prim in prepared.prims:
+        if prim.image is not None and prim.image.key not in sources:
+            file = f"{_guid()}.{prim.image.data.ext}"
+            parts[f"{folder}/{file}"] = prim.image.data.data
+            sources[prim.image.key] = f"./{file}"
+            image_parts.append((f"{folder}/{file}", prim.image.data.ext))
+    dictionary = resource_dictionary(prepared, sources)
+    dictionary_part = f"{folder}/Dictionary.xml" if dictionary else None
 
-        # Pictures: each distinct picture stored once, next to the page.
-        sources: dict[str, str] = {}  # picture key -> "./file" (relative to the page)
-        image_parts: list[tuple[str, str]] = []  # (part, ext)
-        for prim in prepared.prims:
-            if prim.image is not None and prim.image.key not in sources:
-                file = f"{_guid()}.{prim.image.data.ext}"
-                parts[f"{folder}/{file}"] = prim.image.data.data
-                sources[prim.image.key] = f"./{file}"
-                image_parts.append((f"{folder}/{file}", prim.image.data.ext))
-        dictionary = resource_dictionary(prepared, sources)
-        dictionary_part = f"{folder}/Dictionary.xml" if dictionary else None
+    # Fonts used by text: embedded (scrambled, as XPS requires) under a
+    # GUID name, which is also the key for unscrambling them.
+    font_uris: dict[str, str] = {}
+    font_parts: list[tuple[str, str]] = []  # (part, Windows family name)
+    for key, font in prepared.fonts.items():
+        guid = _guid()
+        part = f"{folder}/{guid}.odttf"
+        parts[part] = obfuscate(font.data, guid)
+        font_uris[key] = f"./{guid}.odttf"
+        font_parts.append((part, font.family))
 
-        # Fonts used by text: embedded (scrambled, as XPS requires) under a
-        # GUID name, which is also the key for unscrambling them.
-        font_uris: dict[str, str] = {}
-        font_parts: list[tuple[str, str]] = []  # (part, Windows family name)
-        for key, font in prepared.fonts.items():
-            guid = _guid()
-            part = f"{folder}/{guid}.odttf"
-            parts[part] = obfuscate(font.data, guid)
-            font_uris[key] = f"./{guid}.odttf"
-            font_parts.append((part, font.family))
-
-        parts[fpage] = fixed_page(prepared, GRAPHICS_ID, "./Dictionary.xml" if dictionary else None, font_uris)
-        parts[w2x_part] = w2x(prepared, sources, font_uris)
-        resources = [_Resource(w2x_part, "2d graphics extension", "text/xml", REL_DWF_W2X)]
-        page_resources: list[str] = []  # XPS: files the page needs
-        if dictionary_part:
-            parts[dictionary_part] = dictionary  # type: ignore[assignment]
-            overrides[dictionary_part] = DICTIONARY_TYPE
-            resources.append(_Resource(dictionary_part, "2d graphics dictionary", DICTIONARY_TYPE, REL_DWF_DICTIONARY))
-            page_resources += [dictionary_part] + [part for part, _ in image_parts]
-        for part, family in font_parts:
-            resources.append(
-                _Resource(part, "font", FONT_TYPE, REL_DWF_FONT, "FontResource",
-                          f' request="2" privilege="previewPrint" characterCode="unicode" canonicalName={quoteattr(family)}')
-            )
-            page_resources.append(part)
-        if page_resources:
-            parts[_rels_path(fpage)] = _relationships([(part, REL_XPS_REQUIRED) for part in page_resources])
-        for part, ext in image_parts:
-            resources.append(_Resource(part, "raster reference", IMAGE_MIME[ext], REL_DWF_RASTER, "ImageResource"))
-        parts[descriptor] = _descriptor(sheet, order, fpage, resources)
-        parts[_rels_path(descriptor)] = _relationships(
-            [rel for r in resources for rel in ((r.part, REL_DWF_REQUIRED), (r.part, r.relationship))]
+    parts[fpage] = fixed_page(prepared, GRAPHICS_ID, "./Dictionary.xml" if dictionary else None, font_uris)
+    parts[w2x_part] = w2x(prepared, sources, font_uris)
+    resources = [_Resource(w2x_part, "2d graphics extension", "text/xml", REL_DWF_W2X)]
+    page_resources: list[str] = []  # XPS: files the page needs
+    if dictionary_part:
+        parts[dictionary_part] = dictionary  # type: ignore[assignment]
+        overrides[dictionary_part] = DICTIONARY_TYPE
+        resources.append(_Resource(dictionary_part, "2d graphics dictionary", DICTIONARY_TYPE, REL_DWF_DICTIONARY))
+        page_resources += [dictionary_part] + [part for part, _ in image_parts]
+    for part, family in font_parts:
+        resources.append(
+            _Resource(part, "font", FONT_TYPE, REL_DWF_FONT, "FontResource",
+                      f' request="2" privilege="previewPrint" characterCode="unicode" canonicalName={quoteattr(family)}')
         )
-        sections.append((name, descriptor, fpage, resources, sheet, prepared))
+        page_resources.append(part)
+    if page_resources:
+        parts[_rels_path(fpage)] = _relationships([(part, REL_XPS_REQUIRED) for part in page_resources])
+    for part, ext in image_parts:
+        resources.append(_Resource(part, "raster reference", IMAGE_MIME[ext], REL_DWF_RASTER, "ImageResource"))
+    parts[descriptor] = _descriptor(sheet, order, fpage, resources)
+    parts[_rels_path(descriptor)] = _relationships(
+        [rel for r in resources for rel in ((r.part, REL_DWF_REQUIRED), (r.part, r.relationship))]
+    )
+    return Section(
+        name, descriptor, fpage, resources, sheet.title,
+        fmt(prepared.width_units * UNITS_TO_XPS, 6), fmt(prepared.height_units * UNITS_TO_XPS, 6),
+        parts, overrides,
+    )
+
+
+def package_parts(doc: str, sections: Sequence[Section]) -> dict[str, bytes]:
+    """All parts of the package: the sheets' own files plus the lists that
+    tie them together, as {part name: content}."""
+    if not sections:
+        raise ValueError("a DWFx file needs at least one sheet")
+    parts: dict[str, bytes] = {}
+    overrides: dict[str, str] = {"/CoreProperties.xml": CORE_PROPS_TYPE}
+    for section in sections:
+        parts.update(section.parts)
+        overrides.update(section.overrides)
 
     # --- XPS side: sequence -> document -> pages ---
     fdoc = f"{doc}/FixedDocument.fdoc"
     pages = "".join(
-        f'<PageContent Source="{fpage}" Width="{fmt(pr.width_units * UNITS_TO_XPS, 6)}" '
-        f'Height="{fmt(pr.height_units * UNITS_TO_XPS, 6)}"/>'
-        for _, _, fpage, _, _, pr in sections
+        f'<PageContent Source="{s.fpage}" Width="{s.width}" Height="{s.height}"/>' for s in sections
     )
     parts[fdoc] = (
         f'{XML_DECL}<FixedDocument xmlns="http://schemas.microsoft.com/xps/2005/06">'
@@ -235,14 +263,14 @@ def build_parts(sheets: Sequence[Sheet], sheet_done: Callable[[], None] | None =
     manifest = f"{doc}/manifest.xml"
     properties = f"{doc}/DWFProperties.xml"
     section_xml = "".join(
-        f'<dwf:Section type="com.autodesk.dwf.ePlot" name="{name}" title={quoteattr(s.title)}>'
+        f'<dwf:Section type="com.autodesk.dwf.ePlot" name="{s.name}" title={quoteattr(s.title)}>'
         '<dwf:Source provider="pdf2dwfx"/><dwf:Toc>'
         f'<dwf:Resource role="2d streaming graphics" mime="{FIXEDPAGE_DWF_MIME}" '
-        f'href="{fpage}?{GRAPHICS_ID}"/>'
-        + "".join(f'<dwf:Resource role="{r.role}" mime="{r.mime}" href="{r.part}"/>' for r in res)
-        + f'<dwf:Resource role="descriptor" mime="text/xml" href="{descriptor}"/>'
+        f'href="{s.fpage}?{GRAPHICS_ID}"/>'
+        + "".join(f'<dwf:Resource role="{r.role}" mime="{r.mime}" href="{r.part}"/>' for r in s.resources)
+        + f'<dwf:Resource role="descriptor" mime="text/xml" href="{s.descriptor}"/>'
         "</dwf:Toc></dwf:Section>"
-        for name, descriptor, fpage, res, s, _ in sections
+        for s in sections
     )
     parts[manifest] = (
         f'<dwf:Manifest xmlns:dwf="DWF-Manifest:6.0" version="6.0" objectId="{_guid()}">'
@@ -252,7 +280,7 @@ def build_parts(sheets: Sequence[Sheet], sheet_done: Callable[[], None] | None =
     ).encode("utf-8")
     parts[_rels_path(manifest)] = _relationships(
         [(properties, REL_DWF_PROPERTIES)]
-        + [(descriptor, REL_DWF_SECTION) for _, descriptor, _, _, _, _ in sections]
+        + [(s.descriptor, REL_DWF_SECTION) for s in sections]
     )
     parts[properties] = (
         f"{XML_DECL}<DWFProperties>"
@@ -296,10 +324,12 @@ def build_parts(sheets: Sequence[Sheet], sheet_done: Callable[[], None] | None =
     return parts
 
 
-def write_dwfx(path: Path, sheets: Sequence[Sheet], sheet_done: Callable[[], None] | None = None) -> None:
-    parts = build_parts(sheets, sheet_done)
+def write_package(path: Path, parts: dict[str, bytes]) -> None:
+    """Write the parts into the DWFx (ZIP) file."""
     # The content-types file goes first, as AutoCAD and most OPC tools do.
     order = ["/[Content_Types].xml"] + [p for p in parts if p != "/[Content_Types].xml"]
-    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+    # Level 6 (zlib's usual): twice as fast as the maximum (9) for files
+    # only about 1% bigger.
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for name in order:
             z.writestr(name.lstrip("/"), parts[name])

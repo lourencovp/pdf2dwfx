@@ -8,9 +8,13 @@ from pathlib import Path
 
 import pymupdf
 
-from .dwfx import write_dwfx
+from .dwfx import Section, build_section, document_folder, package_parts, write_package
+from .parallel import document, ordered_map, worker_count
 from .pdf_reader import read_page
 from .scale import PageScale
+
+# A page's scale: given (or None), or worked out from the page by a function.
+ScaleSource = PageScale | Callable[[pymupdf.Page], PageScale | None] | None
 
 
 def parse_pages(spec: str, page_count: int) -> list[int]:
@@ -28,12 +32,28 @@ def parse_pages(spec: str, page_count: int) -> list[int]:
     return pages
 
 
+def convert_page(doc: pymupdf.Document, number: int, order: int, folder: str, scale: ScaleSource) -> tuple[Section, Counter[str]]:
+    """Read, prepare and write one page: its sheet's files, and the PDF
+    features that could not be reproduced on it."""
+    page = doc[number - 1]
+    sheet = read_page(page)
+    sheet.scale = scale(page) if callable(scale) else scale
+    return build_section(folder, order, sheet), sheet.unsupported
+
+
+def _convert_page_job(job: tuple[str, int, int, str, ScaleSource]) -> tuple[Section, Counter[str]]:
+    """convert_page in a worker process (see parallel.py)."""
+    path, number, order, folder, scale = job
+    return convert_page(document(path), number, order, folder, scale)
+
+
 def convert(
     pdf_path: Path,
     dwfx_path: Path,
     pages: int | Sequence[int] | None = None,
     scales: Mapping[int, PageScale] | Callable[[pymupdf.Page], PageScale | None] | None = None,
     progress: Callable[[int, int], None] | None = None,
+    workers: int | None = None,
 ) -> list[str]:
     """Convert PDF pages into one DWFx file with one sheet per page.
 
@@ -42,45 +62,43 @@ def convert(
     page number, or a function that works it out from the page (see
     suggest.py); pages without one measure as paper (mm). Returns
     warnings: PDF features that could not be reproduced, totalled over all
-    converted pages. ``progress(done, total)`` is called as the work
-    goes on (for a progress bar): each page is read, then prepared.
+    converted pages. ``progress(done, total)`` is called after each page
+    (for a progress bar). ``workers``: how many pages to work on at the
+    same time (default: one per processor core; 1 = no worker processes).
     """
     with pymupdf.open(pdf_path) as doc:
+        count = doc.page_count
         if pages is None:
-            numbers = list(range(1, doc.page_count + 1))
+            numbers = list(range(1, count + 1))
         elif isinstance(pages, int):
             numbers = [pages]
         else:
             numbers = list(pages)
         for n in numbers:
-            if not 1 <= n <= doc.page_count:
-                raise ValueError(f"page {n} does not exist (the PDF has {doc.page_count} pages)")
-        total = 2 * len(numbers)
-        done = 0
-
-        def step() -> None:
-            nonlocal done
-            done += 1
+            if not 1 <= n <= count:
+                raise ValueError(f"page {n} does not exist (the PDF has {count} pages)")
+        if not numbers:
+            raise ValueError("a DWFx file needs at least one sheet")
+        folder = document_folder()
+        page_scales = [scales if callable(scales) else (scales or {}).get(n) for n in numbers]
+        workers = workers or worker_count(len(numbers))
+        if workers == 1:
+            results = (convert_page(doc, n, order, folder, s) for order, (n, s) in enumerate(zip(numbers, page_scales), 1))
+        else:
+            jobs = [(str(pdf_path), n, order, folder, s) for order, (n, s) in enumerate(zip(numbers, page_scales), 1)]
+            results = ordered_map(_convert_page_job, jobs, workers)
+        sections: list[Section] = []
+        totals: Counter[str] = Counter()
+        hidden = "layers switched off in the PDF (left out)"
+        hidden_count = 0
+        for section, unsupported in results:
+            sections.append(section)
+            # Layers switched off are a property of the whole PDF: count them once.
+            hidden_count = hidden_count or unsupported.get(hidden, 0)
+            totals.update({k: v for k, v in unsupported.items() if k != hidden})
             if progress:
-                progress(done, total)
-
-        sheets = []
-        for n in numbers:
-            sheet = read_page(doc[n - 1])
-            if callable(scales):
-                sheet.scale = scales(doc[n - 1])
-            elif scales is not None:
-                sheet.scale = scales.get(n)
-            sheets.append(sheet)
-            step()
-    write_dwfx(dwfx_path, sheets, step)
-    totals: Counter[str] = Counter()
-    for sheet in sheets:
-        totals.update(sheet.unsupported)
-    # Layers switched off are a property of the whole PDF: count them once.
-    hidden = "layers switched off in the PDF (left out)"
-    if totals[hidden]:
-        totals[hidden] = sheets[0].unsupported[hidden]
-    else:
-        del totals[hidden]
+                progress(len(sections), len(numbers))
+    write_package(dwfx_path, package_parts(folder, sections))
+    if hidden_count:
+        totals[hidden] = hidden_count
     return [f"{feature} ({count}x)" for feature, count in sorted(totals.items())]

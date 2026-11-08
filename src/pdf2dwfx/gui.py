@@ -15,6 +15,7 @@ PyMuPDF documents must not be shared between threads.
 
 from __future__ import annotations
 
+import multiprocessing
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -43,6 +44,7 @@ from PySide6.QtWidgets import (
 from . import __version__
 from .convert import convert
 from .page_editor import PageEditor, render_page
+from .parallel import document, ordered_map, worker_count
 from .scale import CONFIRMED, SUGGESTED, PageScale, confirmed, parse_scale, with_sheet_scale
 from .suggest import suggest
 
@@ -70,16 +72,36 @@ class LoadedPage:
     scale: PageScale
 
 
-def load_pages(pdf: Path) -> Iterator[LoadedPage]:
-    """Picture and suggested scale of each page, one page at a time."""
+def read_page(doc: pymupdf.Document, number: int) -> tuple:
+    """A small picture of the page (as plain pixels, so it can come back
+    from a worker process), its size and its suggested scale."""
+    page = doc[number - 1]
+    zoom = THUMBNAIL / max(page.rect.width, page.rect.height)
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
+    return number, (pix.samples, pix.width, pix.height, pix.stride), (page.rect.width, page.rect.height), suggest(page)
+
+
+def _read_page_job(job: tuple[str, int]) -> tuple:
+    """read_page in a worker process (see parallel.py)."""
+    path, number = job
+    return read_page(document(path), number)
+
+
+def load_pages(pdf: Path, workers: int | None = None) -> Iterator[LoadedPage]:
+    """Picture and suggested scale of each page, in page order. Pages are
+    read by several worker processes at once (``workers``; default one per
+    processor core, 1 = none)."""
     with pymupdf.open(pdf) as doc:
-        for index in range(doc.page_count):
-            page = doc[index]
-            zoom = THUMBNAIL / max(page.rect.width, page.rect.height)
-            pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
-            # .copy(): the picture must own its pixels, the pixmap goes away.
-            picture = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888).copy()
-            yield LoadedPage(index + 1, picture, (page.rect.width, page.rect.height), suggest(page))
+        count = doc.page_count
+        workers = workers or worker_count(count)
+        if workers == 1:
+            results = (read_page(doc, n) for n in range(1, count + 1))
+        else:
+            results = ordered_map(_read_page_job, [(str(pdf), n) for n in range(1, count + 1)], workers)
+        for number, (samples, w, h, stride), size, scale in results:
+            # .copy(): the picture must own its pixels.
+            picture = QImage(samples, w, h, stride, QImage.Format.Format_RGB888).copy()
+            yield LoadedPage(number, picture, size, scale)
 
 
 def item_text(number: int, scale: PageScale) -> str:
@@ -115,8 +137,10 @@ class Loader(QThread):
 
     def run(self) -> None:
         try:
-            for page in load_pages(self.pdf):
+            pages = load_pages(self.pdf)
+            for page in pages:
                 if self.isInterruptionRequested():
+                    pages.close()  # stops the worker processes
                     return
                 self.page_ready.emit(page)
         except (OSError, ValueError, RuntimeError) as error:
@@ -460,6 +484,8 @@ class MainWindow(QMainWindow):
 
 def main(argv: list[str] | None = None) -> int:
     """Start the app; a PDF given on the command line is opened at once."""
+    # Lets worker processes start inside the packaged app (see parallel.py).
+    multiprocessing.freeze_support()
     argv = sys.argv if argv is None else argv
     app = QApplication.instance() or QApplication(argv)
     window = MainWindow()

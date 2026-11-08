@@ -8,6 +8,7 @@ converting; ``--scale`` and ``--viewport`` set scales yourself.
 from __future__ import annotations
 
 import argparse
+import multiprocessing
 import sys
 from pathlib import Path
 
@@ -75,6 +76,8 @@ def describe(n: int, s: PageScale) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Lets worker processes start inside the packaged app (see parallel.py).
+    multiprocessing.freeze_support()
     parser = argparse.ArgumentParser(
         prog="pdf2dwfx", description="Convert a vector PDF drawing into a DWFx file."
     )

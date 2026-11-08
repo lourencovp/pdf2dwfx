@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import math
 from dataclasses import dataclass, field, replace
+from functools import cache
 
 import pymupdf
 import pyclipper
@@ -431,6 +432,12 @@ def _with_opacity(color: str | None, opacity: float) -> str | None:
     return f"#{round(alpha * opacity * 255):02X}{rgb}"
 
 
+# The style functions below are worked out once per distinct style (styles
+# are immutable, so the answer never changes): a drawing has a handful of
+# styles shared by many thousands of lines.
+
+
+@cache
 def _scaled_style(style: Style, opacity: float) -> Style:
     k = UNITS_PER_PT
     return replace(
@@ -441,6 +448,22 @@ def _scaled_style(style: Style, opacity: float) -> Style:
         dashes=tuple(v * k for v in style.dashes),
         dash_offset=style.dash_offset * k,
     )
+
+
+@cache
+def _fill_style(style: Style) -> Style:
+    return replace(style, stroke=None, width=0.0, dashes=(), even_odd=False)
+
+
+@cache
+def _line_style(style: Style) -> Style:
+    """Style of the lines drawn; dashes are cut into pieces beforehand, so
+    the pieces are solid and get the dash end shape."""
+    line = replace(style, fill=None)
+    if style.dashes:
+        cap = style.dash_cap
+        line = replace(line, dashes=(), dash_offset=0.0, start_cap=cap, end_cap=cap)
+    return line
 
 
 # --- Walking the drawing ---------------------------------------------------------
@@ -523,18 +546,16 @@ class _Preparer:
         if style.fill:
             # One shape per hole-free piece: each gets its own "Polygon"
             # entry in the W2X file (see w2x.py).
-            fill_style = replace(style, stroke=None, width=0.0, dashes=(), even_odd=False)
+            fill_style = _fill_style(style)
             for piece in _fill_pieces(contours, style.even_odd, region):
                 self.out.prims.append(Prim("fill", [piece], [True], fill_style, shape.layer))
         if style.stroke:
-            line_style = replace(style, fill=None)
+            line_style = _line_style(style)
             if style.dashes:
                 # Dashes first, then trimming, so dashes keep their place
                 # at a clip edge exactly as in the PDF.
                 contours = _dash_pieces(contours, closed, style.dashes, style.dash_offset)
                 closed = [False] * len(contours)
-                cap = style.dash_cap
-                line_style = replace(line_style, dashes=(), dash_offset=0.0, start_cap=cap, end_cap=cap)
             if not contours:
                 return
             lines, line_closed = _stroke_contours(contours, closed, region)

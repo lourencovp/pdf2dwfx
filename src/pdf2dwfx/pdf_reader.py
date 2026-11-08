@@ -170,6 +170,16 @@ class _ColorConverter:
     def __init__(self) -> None:
         self._rgb = mupdf.FzColorspace(mupdf.FzColorspace.Fixed_RGB)
         self._params = mupdf.FzColorParams()
+        # A drawing uses few colours but many thousands of lines: convert
+        # each colour once. Key: colour space (by its MuPDF object), colour
+        # values, transparency. Each colour space in the key is held on to,
+        # so MuPDF cannot free it and reuse its address for another one.
+        self._xps: dict[tuple, str] = {}
+        self._held: list[Any] = []
+
+    def __del__(self) -> None:
+        for colorspace in self._held:
+            mupdf.ll_fz_drop_colorspace(colorspace)
 
     def rgb(self, colorspace: Any, color: Any) -> tuple[float, float, float]:
         out = mupdf.ll_fz_convert_color(
@@ -178,6 +188,17 @@ class _ColorConverter:
         return out[0], out[1], out[2]
 
     def xps(self, colorspace: Any, color: Any, alpha: float) -> str:
+        if colorspace is None:
+            return self._xps_now(colorspace, color, alpha)
+        values = tuple(mupdf.floats_getitem(color, i) for i in range(mupdf.ll_fz_colorspace_n(colorspace)))
+        key = (int(colorspace.this), values, alpha)  # .this: the address of the MuPDF object
+        if key not in self._xps:
+            if not any(int(c.this) == key[0] for c in self._held):
+                self._held.append(mupdf.ll_fz_keep_colorspace(colorspace))
+            self._xps[key] = self._xps_now(colorspace, color, alpha)
+        return self._xps[key]
+
+    def _xps_now(self, colorspace: Any, color: Any, alpha: float) -> str:
         rgb = "".join(f"{round(max(0.0, min(1.0, v)) * 255):02X}" for v in self.rgb(colorspace, color))
         if alpha < 1:
             return f"#{round(max(0.0, alpha) * 255):02X}{rgb}"
