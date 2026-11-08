@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from .convert import convert
+from .page_editor import PageEditor, render_page
 from .scale import CONFIRMED, SUGGESTED, PageScale, confirmed, parse_scale, with_sheet_scale
 from .suggest import suggest
 
@@ -176,6 +177,7 @@ class MainWindow(QMainWindow):
             "QListWidget::item:selected { border: 3px solid palette(highlight); }"
         )
         self.overview.itemSelectionChanged.connect(self.show_selection)
+        self.overview.itemDoubleClicked.connect(lambda item: self.open_page(item.data(Qt.ItemDataRole.UserRole)))
 
         # Right: the scale of the selected pages.
         self.selection_label = QLabel("Select one or more pages.")
@@ -192,6 +194,8 @@ class MainWindow(QMainWindow):
         self.accept_button.clicked.connect(self.accept_suggestion)
         self.paper_button = QPushButton("No scale (measure as paper, mm)")
         self.paper_button.clicked.connect(self.set_paper)
+        self.page_button = QPushButton("Set up page and viewports…")
+        self.page_button.clicked.connect(lambda: self.open_page(self.selected()[0]))
         self.input_error = QLabel("")
         self.input_error.setStyleSheet("color: #c00")
         self.input_error.setWordWrap(True)
@@ -213,6 +217,9 @@ class MainWindow(QMainWindow):
         side.addWidget(self.input_error)
         side.addWidget(self.accept_button)
         side.addWidget(self.paper_button)
+        side.addSpacing(12)
+        side.addWidget(self.page_button)
+        side.addWidget(QLabel("(or double-click a page)"))
         side.addStretch(1)
         side.addWidget(legend)
         side_panel = QWidget()
@@ -350,6 +357,28 @@ class MainWindow(QMainWindow):
     def accept_suggestion(self) -> None:
         self.change(confirmed)
 
+    def page_editor(self, number: int) -> PageEditor:
+        """The page screen for one page, with a sharp picture of it."""
+        assert self.pdf is not None
+        with pymupdf.open(self.pdf) as doc:
+            picture = render_page(doc[number - 1])
+        page = self.pages[number]
+        return PageEditor(number, picture, page.size, self.scales[number], self)
+
+    def open_page(self, number: int) -> None:
+        # Only one thread may use PyMuPDF at a time: wait until reading is done.
+        if self.loader is not None or self.converter is not None:
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            editor = self.page_editor(number)
+        finally:
+            QApplication.restoreOverrideCursor()
+        if editor.exec() and editor.result_scale is not None:
+            self.scales[number] = editor.result_scale
+            self.refresh(number)
+            self.show_selection()
+
     def unchecked(self) -> list[int]:
         return [n for n, s in sorted(self.scales.items()) if s.status != CONFIRMED]
 
@@ -419,6 +448,7 @@ class MainWindow(QMainWindow):
         self.open_button.setEnabled(self.converter is None)
         for widget in (self.scale_input, self.set_button, self.accept_button, self.paper_button):
             widget.setEnabled(has_selection and self.converter is None)
+        self.page_button.setEnabled(len(self.overview.selectedItems()) == 1 and not busy)
         self.convert_button.setEnabled(self.pdf is not None and bool(self.pages) and not busy)
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt's name)

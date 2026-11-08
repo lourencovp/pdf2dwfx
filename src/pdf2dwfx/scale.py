@@ -154,3 +154,9 @@ def with_sheet_scale(page: PageScale, scale: float | None) -> PageScale:
 def confirmed(page: PageScale) -> PageScale:
     """The user checked the suggestion and accepts it as it is."""
     return PageScale(page.scale, list(page.viewports), CONFIRMED, page.source or "user", [], page.found)
+
+
+def with_viewports(page: PageScale, scale: float | None, viewports: list[Viewport]) -> PageScale:
+    """The user set the page up: a scale for the sheet (None = paper, mm)
+    and viewports, areas with their own scale."""
+    return PageScale(scale, list(viewports), CONFIRMED, "user", [], page.found)

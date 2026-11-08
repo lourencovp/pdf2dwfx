@@ -125,3 +125,13 @@ def test_convert_from_window(app: QApplication, two_pages: Path, tmp_path: Path)
         assert sum(n.endswith("FixedPage.fpage") for n in z.namelist()) == 2
     assert told and told[0].startswith(f"Written: {out}")
     assert window.progress.value() == window.progress.maximum() == 4  # 2 pages read + 2 prepared
+
+
+def test_page_screen_opens_with_the_page_scale(app: QApplication, two_pages: Path) -> None:
+    window = opened(MainWindow(), two_pages, app)
+    select(window, 1)
+    assert window.page_button.isEnabled()
+    editor = window.page_editor(1)
+    assert editor.sheet_input.text() == "1:50" and [i.scale for i in editor.items()] == [5]
+    select(window, 1, 2)
+    assert not window.page_button.isEnabled()  # one page at a time
