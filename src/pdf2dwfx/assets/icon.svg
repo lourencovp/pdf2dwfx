@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- pdf2dwfx app icon: a drawing sheet with a floor plan and a dimension
+       line, and a "convert" arrow. Grayscale and white only. -->
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#262626"/>
+  <!-- the sheet, with a folded corner -->
+  <path d="M64 40 H164 L200 76 V216 H64 Z" fill="#FFFFFF"/>
+  <path d="M164 40 V76 H200 Z" fill="#BDBDBD"/>
+  <!-- floor plan: walls with a door opening and a door swing -->
+  <g fill="none" stroke="#262626" stroke-linecap="square">
+    <path d="M86 150 V98 H178 V150 H140" stroke-width="9"/>
+    <path d="M86 150 H112" stroke-width="9"/>
+    <path d="M132 98 V126" stroke-width="5"/>
+    <path d="M112 150 A28 28 0 0 1 140 122" stroke-width="3" stroke-dasharray="5 4"/>
+    <path d="M140 150 V122" stroke-width="3"/>
+  </g>
+  <!-- dimension line under the plan -->
+  <g stroke="#7A7A7A" stroke-width="3" fill="none">
+    <path d="M86 172 H178"/>
+    <path d="M81 177 L91 167 M173 177 L183 167"/>
+    <path d="M86 164 V178 M178 164 V178"/>
+  </g>
+  <!-- convert badge -->
+  <circle cx="202" cy="206" r="28" fill="#E6E6E6" stroke="#262626" stroke-width="6"/>
+  <path d="M189 206 H213 M204 196 L214 206 L204 216" fill="none" stroke="#262626" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

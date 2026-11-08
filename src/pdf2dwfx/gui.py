@@ -37,11 +37,12 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from . import __version__
+from . import __version__, theme
 from .convert import convert
 from .crash import make_report, save_report
 from .crash_dialog import CrashDialog
@@ -122,6 +123,27 @@ def load_pages(pdf: Path, workers: int | None = None) -> Iterator[LoadedPage]:
             # .copy(): the picture must own its pixels.
             picture = QImage(samples, w, h, stride, QImage.Format.Format_RGB888).copy()
             yield LoadedPage(number, picture, size, scale)
+
+
+NOTHING_SELECTED = "Click a page to see its scale. Ctrl-click or Shift-click to select several."
+
+
+def legend_html() -> str:
+    """What the page colours mean, with a small swatch of each colour."""
+    rows = [
+        (COLOURS[SUGGESTED], "Suggested scale: please check"),
+        (COLOURS["none"], "No scale found: measures as paper (mm)"),
+        (COLOURS[CONFIRMED], "Checked by you"),
+    ]
+    html = "".join(
+        f'<span style="color: rgb({c.red()},{c.green()},{c.blue()}); font-size: 13pt;">■</span>&nbsp; {text}<br>'
+        for c, text in rows
+    )
+    return (
+        html
+        + f"{WARNING}&nbsp; Several scales on the page<br>"
+        + '<span style="color: rgb(0,90,200);">▢</span>&nbsp; Viewport: an area with its own scale'
+    )
 
 
 def item_text(number: int, scale: PageScale) -> str:
@@ -205,16 +227,42 @@ class MainWindow(QMainWindow):
         self.loader: Loader | None = None
         self.converter: Converter | None = None
 
-        # Top: open a PDF.
+        self.setWindowIcon(theme.icon())
+        self.setAcceptDrops(True)  # a PDF can be dropped onto the window
+
+        # Top: the app name, the open PDF, and the button to open one.
+        title = QLabel("pdf2dwfx")
+        title.setObjectName("title")
+        self.file_label = QLabel("")
+        self.file_label.setObjectName("muted")
         self.open_button = QPushButton("Open PDF…")
         self.open_button.clicked.connect(self.choose_pdf)
-        self.file_label = QLabel("No PDF open")
         top = QHBoxLayout()
-        top.addWidget(self.open_button)
+        top.addWidget(title)
+        top.addSpacing(12)
         top.addWidget(self.file_label, 1)
+        top.addWidget(self.open_button)
 
-        # Centre: all pages side by side.
+        # Centre: a start screen until a PDF is open, then all pages side by side.
+        empty_title = QLabel("Open a PDF drawing to start")
+        empty_title.setObjectName("empty_title")
+        empty_hint = QLabel("Click “Open PDF…” or drop a PDF here.\nEach page becomes a DWFx sheet with its drawing scale.")
+        empty_hint.setObjectName("empty_hint")
+        empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_open = QPushButton("Open PDF…")
+        empty_open.setObjectName("primary")
+        empty_open.clicked.connect(self.choose_pdf)
+        empty = QVBoxLayout()
+        empty.addStretch(1)
+        for widget in (empty_title, empty_hint, empty_open):
+            empty.addWidget(widget, 0, Qt.AlignmentFlag.AlignHCenter)
+            empty.addSpacing(10)
+        empty.addStretch(2)
+        empty_page = QWidget()
+        empty_page.setLayout(empty)
+
         self.overview = QListWidget()
+        self.overview.setObjectName("overview")
         self.overview.setViewMode(QListWidget.ViewMode.IconMode)
         self.overview.setIconSize(QSize(THUMBNAIL, THUMBNAIL))
         self.overview.setResizeMode(QListWidget.ResizeMode.Adjust)
@@ -222,78 +270,101 @@ class MainWindow(QMainWindow):
         self.overview.setSpacing(8)
         self.overview.setWordWrap(True)
         self.overview.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        # A clear frame around selected pages (the default highlight is faint).
-        self.overview.setStyleSheet(
-            "QListWidget::item { border: 3px solid transparent; }"
-            "QListWidget::item:selected { border: 3px solid palette(highlight); }"
-        )
         self.overview.itemSelectionChanged.connect(self.show_selection)
         self.overview.itemDoubleClicked.connect(lambda item: self.open_page(item.data(Qt.ItemDataRole.UserRole)))
+        self.centre = QStackedWidget()
+        self.centre.addWidget(empty_page)
+        self.centre.addWidget(self.overview)
 
         # Right: the scale of the selected pages.
-        self.selection_label = QLabel("Select one or more pages.")
+        self.selection_label = QLabel("No page selected")
+        self.selection_label.setObjectName("heading")
         self.selection_label.setWordWrap(True)
-        self.details = QLabel("")
+        self.details = QLabel(NOTHING_SELECTED)
+        self.details.setObjectName("muted")
         self.details.setWordWrap(True)
         self.details.setTextFormat(Qt.TextFormat.PlainText)
         self.scale_input = QLineEdit()
         self.scale_input.setPlaceholderText('e.g. 1:100 or 1/4" = 1\'-0"')
         self.scale_input.returnPressed.connect(self.set_scale)
-        self.set_button = QPushButton("Set scale for selected pages")
+        self.set_button = QPushButton("Set scale")
+        self.set_button.setObjectName("primary")
         self.set_button.clicked.connect(self.set_scale)
         self.accept_button = QPushButton("Accept suggestion")
         self.accept_button.clicked.connect(self.accept_suggestion)
-        self.paper_button = QPushButton("No scale (measure as paper, mm)")
+        self.paper_button = QPushButton("No scale (paper, mm)")
         self.paper_button.clicked.connect(self.set_paper)
-        self.page_button = QPushButton("Set up page and viewports…")
+        self.page_button = QPushButton("Set up viewports…")
+        self.page_button.setToolTip("Open the page large to draw areas with their own scale (or double-click a page)")
         self.page_button.clicked.connect(lambda: self.open_page(self.selected()[0]))
         self.input_error = QLabel("")
-        self.input_error.setStyleSheet("color: #c00")
+        self.input_error.setObjectName("error")
         self.input_error.setWordWrap(True)
-        legend = QLabel(
-            "Yellow: suggested scale, please check\n"
-            "Purple: no scale found (measures as paper, mm)\n"
-            "Green: checked by you\n"
-            f"{WARNING} several scales on the page: please set it up\n"
-            "Blue frame: a viewport (an area with its own scale)"
-        )
-        legend.setWordWrap(True)
+        self.input_error.hide()
+        scale_heading = QLabel("Scale for the whole page")
+        scale_heading.setObjectName("heading")
+        more_heading = QLabel("More options")
+        more_heading.setObjectName("heading")
+        entry = QHBoxLayout()
+        entry.addWidget(self.scale_input, 1)
+        entry.addWidget(self.set_button)
+        self.legend = QLabel(legend_html())
+        self.legend.setObjectName("legend")
+        self.legend.setWordWrap(True)
         side = QVBoxLayout()
+        side.setContentsMargins(16, 16, 16, 16)
+        side.setSpacing(8)
         side.addWidget(self.selection_label)
         side.addWidget(self.details)
-        side.addSpacing(12)
-        side.addWidget(QLabel("Scale:"))
-        side.addWidget(self.scale_input)
-        side.addWidget(self.set_button)
+        side.addSpacing(10)
+        side.addWidget(scale_heading)
+        side.addLayout(entry)
         side.addWidget(self.input_error)
+        side.addWidget(more_heading)
         side.addWidget(self.accept_button)
         side.addWidget(self.paper_button)
-        side.addSpacing(12)
         side.addWidget(self.page_button)
-        side.addWidget(QLabel("(or double-click a page)"))
         side.addStretch(1)
-        side.addWidget(legend)
-        side_panel = QWidget()
+        side.addWidget(self.legend)
+        self.side_panel = side_panel = QWidget()
+        side_panel.setObjectName("panel")
+        side_panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         side_panel.setLayout(side)
-        side_panel.setFixedWidth(300)
+        side_panel.setFixedWidth(320)
+        side_panel.hide()  # shown once a PDF is open
 
         middle = QHBoxLayout()
-        middle.addWidget(self.overview, 1)
+        middle.setSpacing(12)
+        middle.addWidget(self.centre, 1)
         middle.addWidget(side_panel)
 
-        # Bottom: convert.
+        # Bottom: what is happening, and convert.
+        self.status = QLabel("")
+        self.status.setObjectName("muted")
         self.progress = QProgressBar()
-        self.progress.setFormat("")
+        self.progress.setTextVisible(False)
         self.convert_button = QPushButton("Convert to DWFx…")
+        self.convert_button.setObjectName("primary")
         self.convert_button.clicked.connect(self.choose_output)
+        progress_box = QVBoxLayout()
+        progress_box.setSpacing(4)
+        progress_box.addWidget(self.status)
+        progress_box.addWidget(self.progress)
         bottom = QHBoxLayout()
-        bottom.addWidget(self.progress, 1)
+        bottom.setContentsMargins(0, 0, 0, 0)
+        bottom.addLayout(progress_box, 1)
+        bottom.addSpacing(12)
         bottom.addWidget(self.convert_button)
+        self.bottom_bar = QWidget()
+        self.bottom_bar.setLayout(bottom)
+        self.bottom_bar.hide()  # shown once a PDF is open
 
         layout = QVBoxLayout()
+        layout.setContentsMargins(16, 8, 16, 16)
+        layout.setSpacing(12)
         layout.addLayout(top)
         layout.addLayout(middle, 1)
-        layout.addLayout(bottom)
+        layout.addWidget(self.bottom_bar)
         central = QWidget()
         central.setLayout(layout)
         self.setCentralWidget(central)
@@ -310,7 +381,12 @@ class MainWindow(QMainWindow):
             action.triggered.connect(lambda _=False, n=name: self.set_appearance(n))
             group.addAction(action)
             self.appearance_actions[name] = action
+        self.appearance = chosen
         self.show_appearance(chosen)
+        # "Follow system": change along when the computer switches light/dark.
+        QGuiApplication.styleHints().colorSchemeChanged.connect(
+            lambda _: self.show_appearance("system") if self.appearance == "system" else None
+        )
         self.update_buttons()
 
     # Opening a PDF -------------------------------------------------------
@@ -326,7 +402,11 @@ class MainWindow(QMainWindow):
         self.pages.clear()
         self.scales.clear()
         self.overview.clear()
-        self.file_label.setText(f"{pdf.name}: reading pages…")
+        self.centre.setCurrentWidget(self.overview)
+        self.side_panel.show()
+        self.bottom_bar.show()
+        self.file_label.setText(pdf.name)
+        self.status.setText("Reading pages…")
         self.progress.setRange(0, 0)  # busy, length unknown
         self.loader = Loader(pdf)
         self.loader.page_ready.connect(self.add_page)
@@ -357,9 +437,9 @@ class MainWindow(QMainWindow):
         self.loader = None
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
-        self.progress.setFormat("")
         if self.pdf is not None:
-            self.file_label.setText(f"{self.pdf.name}: {len(self.pages)} pages")
+            self.file_label.setText(f"{self.pdf.name} · {len(self.pages)} pages")
+        self.show_counts()
         self.update_buttons()
 
     # Pages and their scales ---------------------------------------------
@@ -380,10 +460,10 @@ class MainWindow(QMainWindow):
 
     def show_selection(self) -> None:
         numbers = self.selected()
-        self.input_error.setText("")
+        self.show_error("")
         if not numbers:
-            self.selection_label.setText("Select one or more pages.")
-            self.details.setText("")
+            self.selection_label.setText("No page selected")
+            self.details.setText(NOTHING_SELECTED)
         elif len(numbers) == 1:
             n = numbers[0]
             scale = self.scales[n]
@@ -405,17 +485,23 @@ class MainWindow(QMainWindow):
             self.scales[n] = make(self.scales[n])
             self.refresh(n)
         self.show_selection()
+        self.show_counts()
 
     def set_scale(self) -> None:
         try:
             value = parse_scale(self.scale_input.text())
         except ValueError:
-            self.input_error.setText('Not a scale. Write it like 1:100, 1:50 or 1/4" = 1\'-0".')
+            self.show_error('Not a scale. Write it like 1:100, 1:50 or 1/4" = 1\'-0".')
             return
         if value is None:
-            self.input_error.setText("Write a scale, or use the button for no scale.")
+            self.show_error("Write a scale, or use the button for no scale.")
             return
         self.change(lambda old: with_sheet_scale(old, value))
+
+    def show_error(self, text: str) -> None:
+        """A message under the scale box; the line only takes room when used."""
+        self.input_error.setText(text)
+        self.input_error.setVisible(bool(text))
 
     def set_paper(self) -> None:
         self.change(lambda old: with_sheet_scale(old, None))
@@ -444,6 +530,14 @@ class MainWindow(QMainWindow):
             self.scales[number] = editor.result_scale
             self.refresh(number)
             self.show_selection()
+            self.show_counts()
+
+    def show_counts(self) -> None:
+        """The status line: how many pages still need checking."""
+        if self.loader is not None or self.converter is not None or not self.pages:
+            return
+        unchecked = len(self.unchecked())
+        self.status.setText(f"{unchecked} of {len(self.pages)} pages not checked yet" if unchecked else "All pages checked")
 
     def unchecked(self) -> list[int]:
         return [n for n, s in sorted(self.scales.items()) if s.status != CONFIRMED]
@@ -480,23 +574,24 @@ class MainWindow(QMainWindow):
         self.converter.finished.connect(self.convert_finished)
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
-        self.progress.setFormat("Converting… %p%")
+        self.status.setText("Converting…")
         self.converter.start()
         self.update_buttons()
 
     def show_progress(self, done: int, total: int) -> None:
         self.progress.setRange(0, total)
         self.progress.setValue(done)
+        self.status.setText(f"Converting… page {done} of {total}")
 
     def convert_done(self, dwfx: Path, warnings: list[str]) -> None:
-        self.progress.setFormat("Done")
+        self.status.setText(f"Saved {dwfx.name}")
         text = f"Written: {dwfx}"
         if warnings:
             text += "\n\nNot converted (yet):\n" + "\n".join(warnings)
         self.tell("Converted", text)
 
     def convert_failed(self, message: str) -> None:
-        self.progress.setFormat("Failed")
+        self.status.setText("Conversion failed")
         self.tell("Conversion failed", message)
 
     def convert_finished(self) -> None:
@@ -505,10 +600,28 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------------------
 
+    # Dropping a PDF onto the window opens it.
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802 (Qt's name)
+        if self.dropped_pdf(event) is not None and self.converter is None:
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        pdf = self.dropped_pdf(event)
+        if pdf is not None and self.converter is None:
+            self.open_pdf(pdf)
+
+    @staticmethod
+    def dropped_pdf(event) -> Path | None:
+        """The PDF being dropped, if it is exactly one PDF file."""
+        urls = event.mimeData().urls() if event.mimeData().hasUrls() else []
+        files = [Path(u.toLocalFile()) for u in urls if u.isLocalFile()]
+        return files[0] if len(files) == 1 and files[0].suffix.lower() == ".pdf" else None
+
     def crashed(self, error: BaseException, private: list[str] | None = None) -> None:
         """Something unexpected went wrong: save a report and show it."""
-        if self.progress.format().startswith("Converting"):
-            self.progress.setFormat("Failed")
+        if self.converter is not None:
+            self.status.setText("Conversion failed")
         try:
             report = make_report(error, self.pdf, private)
             saved = save_report(report)
@@ -522,11 +635,10 @@ class MainWindow(QMainWindow):
 
     def show_appearance(self, name: str) -> None:
         apply_appearance(name)
-        # Widgets with their own style sheet keep their old colours unless
-        # the sheet is applied again.
-        self.overview.setStyleSheet(self.overview.styleSheet())
+        theme.apply(name)
 
     def set_appearance(self, name: str) -> None:
+        self.appearance = name
         self.show_appearance(name)
         self.preferences.setValue("appearance", name)
         self.appearance_actions[name].setChecked(True)

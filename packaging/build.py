@@ -30,29 +30,20 @@ def run(*command: str | Path) -> None:
 
 
 def make_icon(path: Path, size: int = 256) -> Path:
-    """A plain placeholder icon (a sheet with a folded corner), drawn here
-    so no picture file needs to be kept in the repository."""
+    """The app icon (src/pdf2dwfx/assets/icon.svg) as PNG, plus the Windows
+    (.ico) and macOS (.icns) formats, all drawn by Qt."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtCore import QPointF, Qt
-    from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPolygonF
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QGuiApplication, QImage, QPainter
+    from PySide6.QtSvg import QSvgRenderer
 
     app = QGuiApplication.instance() or QGuiApplication([])
     image = QImage(size, size, QImage.Format.Format_ARGB32)
     image.fill(Qt.GlobalColor.transparent)
-    p = QPainter(image)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    s = size / 16
-    sheet = QPolygonF([QPointF(3 * s, 1 * s), QPointF(10 * s, 1 * s), QPointF(13 * s, 4 * s), QPointF(13 * s, 15 * s), QPointF(3 * s, 15 * s)])
-    p.setBrush(QColor(255, 255, 255))
-    p.setPen(QColor(0, 70, 170))
-    p.drawPolygon(sheet)
-    p.setBrush(QColor(0, 90, 200))
-    p.drawPolygon(QPolygonF([QPointF(10 * s, 1 * s), QPointF(13 * s, 4 * s), QPointF(10 * s, 4 * s)]))
-    p.drawRect(int(5 * s), int(7 * s), int(6 * s), int(5 * s))
-    p.end()
-    image.save(str(path))
-    # Windows and macOS want their own icon formats; Qt writes both.
-    for suffix in (".ico", ".icns"):
+    painter = QPainter(image)
+    QSvgRenderer(str(ROOT / "src" / NAME / "assets" / "icon.svg")).render(painter)
+    painter.end()
+    for suffix in (".png", ".ico", ".icns"):
         image.save(str(path.with_suffix(suffix)))
     del app
     return path
@@ -67,6 +58,7 @@ def pyinstaller(icon: Path, onefile: bool) -> None:
         "--noconfirm", "--clean",
         "--icon", icon.with_suffix({"win32": ".ico", "darwin": ".icns"}.get(sys.platform, ".png")),
         "--copy-metadata", NAME,  # the app shows its version number
+        "--collect-data", NAME,  # the font and icon in src/pdf2dwfx/assets
         "--distpath", DIST, "--workpath", ROOT / "build", "--specpath", ROOT / "build",
     )
 

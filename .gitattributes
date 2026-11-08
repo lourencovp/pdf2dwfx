@@ -15,3 +15,5 @@
 *.jpg binary
 *.ico binary
 *.icns binary
+*.ttf binary
+*.otf binary

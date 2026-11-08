@@ -63,6 +63,8 @@ uv run pdf2dwfx drawing.pdf --no-suggest                   # no guessing: paper 
 
 [GNU AGPL-3.0](LICENSE).
 
+The app uses the [Inter](https://rsms.me/inter/) font, under the [SIL Open Font License 1.1](src/pdf2dwfx/assets/fonts/Inter-LICENSE.txt).
+
 ---
 
 ## Português
@@ -97,3 +99,5 @@ A aplicação funciona **totalmente offline**: nunca se liga à internet, não e
 ### Licença
 
 [GNU AGPL-3.0](LICENSE).
+
+A aplicação usa o tipo de letra [Inter](https://rsms.me/inter/), sob a [SIL Open Font License 1.1](src/pdf2dwfx/assets/fonts/Inter-LICENSE.txt).
