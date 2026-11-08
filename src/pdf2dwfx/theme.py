@@ -25,8 +25,10 @@ LIGHT = {
     "text": "#1F1F1F",
     "muted": "#6E6E6E",
     "hover": "#F0F0F0",
+    "pressed": "#DCDCDC",  # a button while it is held down
     "primary": "#262626",  # main buttons
     "primary_hover": "#3D3D3D",
+    "primary_pressed": "#000000",
     "primary_text": "#FFFFFF",
     "selection": "#262626",  # frame around selected pages
     "error": "#B3261E",
@@ -40,8 +42,10 @@ DARK = {
     "text": "#ECECEC",
     "muted": "#A0A0A0",
     "hover": "#2E2E2E",
+    "pressed": "#404040",
     "primary": "#ECECEC",
     "primary_hover": "#D4D4D4",
+    "primary_pressed": "#B0B0B0",
     "primary_text": "#1E1E1E",
     "selection": "#ECECEC",
     "error": "#F2B8B5",
@@ -99,12 +103,14 @@ def style_sheet(c: dict[str, str]) -> str:
         border-radius: 8px; padding: 7px 14px;
     }}
     QPushButton:hover {{ background: {c['hover']}; }}
+    QPushButton:pressed {{ background: {c['pressed']}; padding: 8px 14px 6px 14px; }}
     QPushButton:checked {{ background: {c['hover']}; border-color: {c['selection']}; }}
     QPushButton:disabled {{ color: {c['muted']}; border-color: {c['border']}; }}
     QPushButton#primary {{
         background: {c['primary']}; color: {c['primary_text']}; border: none; font-weight: 500;
     }}
     QPushButton#primary:hover {{ background: {c['primary_hover']}; }}
+    QPushButton#primary:pressed {{ background: {c['primary_pressed']}; padding: 8px 14px 6px 14px; }}
     QPushButton#primary:disabled {{ background: {c['border']}; color: {c['muted']}; }}
 
     QLineEdit, QPlainTextEdit {{

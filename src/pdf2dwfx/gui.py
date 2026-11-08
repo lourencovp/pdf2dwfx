@@ -185,9 +185,10 @@ class Switch(QAbstractButton):
         p.setBrush(QColor(c["primary"] if self.isChecked() else c["strong_border"]))
         p.drawRoundedRect(self.rect(), 11, 11)
         p.setBrush(QColor(c["primary_text"] if self.isChecked() else c["surface"]))
-        knob = 16
+        # While held down the knob stretches, so the press is visible.
+        knob = 22 if self.isDown() else 16
         x = self.width() - knob - 3 if self.isChecked() else 3
-        p.drawEllipse(x, 3, knob, knob)
+        p.drawRoundedRect(x, 3, knob, 16, 8, 8)
         p.end()
 
 
