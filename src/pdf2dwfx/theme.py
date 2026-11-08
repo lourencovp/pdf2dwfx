@@ -151,10 +151,14 @@ def palette(c: dict[str, str]) -> QPalette:
     return p
 
 
+current: dict[str, str] = LIGHT  # the colours in use (for parts drawn by hand)
+
+
 def apply(appearance: str) -> dict[str, str]:
     """Give the whole app the light or dark look; returns the colours used."""
+    global current
     app = QApplication.instance()
-    colours = DARK if is_dark(appearance) else LIGHT
+    colours = current = DARK if is_dark(appearance) else LIGHT
     if app is not None:
         load_fonts()
         app.setStyle("Fusion")  # draws the same on every system, so the style sheet looks the same

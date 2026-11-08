@@ -23,8 +23,9 @@ from pathlib import Path
 
 import pymupdf
 from PySide6.QtCore import QSettings, QSize, Qt, QThread, Signal
-from PySide6.QtGui import QActionGroup, QColor, QGuiApplication, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QAbstractItemView,
     QApplication,
     QFileDialog,
@@ -69,9 +70,9 @@ STATUS_TEXT = {
 
 # Light or dark window colours; "system" follows the computer's setting.
 APPEARANCES = {
-    "system": ("Follow system", Qt.ColorScheme.Unknown),
-    "light": ("Light", Qt.ColorScheme.Light),
-    "dark": ("Dark", Qt.ColorScheme.Dark),
+    "system": Qt.ColorScheme.Unknown,
+    "light": Qt.ColorScheme.Light,
+    "dark": Qt.ColorScheme.Dark,
 }
 
 
@@ -82,7 +83,7 @@ def settings() -> QSettings:
 
 
 def apply_appearance(name: str) -> None:
-    QGuiApplication.styleHints().setColorScheme(APPEARANCES.get(name, APPEARANCES["system"])[1])
+    QGuiApplication.styleHints().setColorScheme(APPEARANCES.get(name, APPEARANCES["system"]))
 
 
 @dataclass
@@ -167,6 +168,29 @@ def page_icon(page: LoadedPage, scale: PageScale) -> QPixmap:
     return pixmap
 
 
+class Switch(QAbstractButton):
+    """A small on/off switch (a rounded track with a sliding knob)."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(40, 22)
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt's name)
+        c = theme.current
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(c["primary"] if self.isChecked() else c["strong_border"]))
+        p.drawRoundedRect(self.rect(), 11, 11)
+        p.setBrush(QColor(c["primary_text"] if self.isChecked() else c["surface"]))
+        knob = 16
+        x = self.width() - knob - 3 if self.isChecked() else 3
+        p.drawEllipse(x, 3, knob, knob)
+        p.end()
+
+
 class Loader(QThread):
     """Reads pages in the background and hands them over one by one."""
 
@@ -241,6 +265,14 @@ class MainWindow(QMainWindow):
         top.addWidget(title)
         top.addSpacing(12)
         top.addWidget(self.file_label, 1)
+        dark_label = QLabel("Dark mode")
+        dark_label.setObjectName("muted")
+        self.dark_switch = Switch()
+        self.dark_switch.setToolTip("Light or dark colours (remembered next time)")
+        self.dark_switch.toggled.connect(lambda on: self.set_appearance("dark" if on else "light"))
+        top.addWidget(dark_label)
+        top.addWidget(self.dark_switch)
+        top.addSpacing(16)
         top.addWidget(self.open_button)
 
         # Centre: a start screen until a PDF is open, then all pages side by side.
@@ -369,21 +401,10 @@ class MainWindow(QMainWindow):
         central.setLayout(layout)
         self.setCentralWidget(central)
 
-        # Menu: View > Appearance (remembered for next time).
-        appearance_menu = self.menuBar().addMenu("&View").addMenu("Appearance")
-        group = QActionGroup(self)
-        self.appearance_actions = {}
-        chosen = str(self.preferences.value("appearance", "system"))
-        for name, (label, _) in APPEARANCES.items():
-            action = appearance_menu.addAction(label)
-            action.setCheckable(True)
-            action.setChecked(name == chosen)
-            action.triggered.connect(lambda _=False, n=name: self.set_appearance(n))
-            group.addAction(action)
-            self.appearance_actions[name] = action
-        self.appearance = chosen
-        self.show_appearance(chosen)
-        # "Follow system": change along when the computer switches light/dark.
+        # Light or dark: what the user chose last time; until they choose,
+        # follow the computer (and change along when it switches).
+        self.appearance = str(self.preferences.value("appearance", "system"))
+        self.show_appearance(self.appearance)
         QGuiApplication.styleHints().colorSchemeChanged.connect(
             lambda _: self.show_appearance("system") if self.appearance == "system" else None
         )
@@ -636,12 +657,15 @@ class MainWindow(QMainWindow):
     def show_appearance(self, name: str) -> None:
         apply_appearance(name)
         theme.apply(name)
+        self.dark_switch.blockSignals(True)  # showing the state is not a new choice
+        self.dark_switch.setChecked(theme.is_dark(name))
+        self.dark_switch.blockSignals(False)
+        self.dark_switch.update()
 
     def set_appearance(self, name: str) -> None:
         self.appearance = name
         self.show_appearance(name)
         self.preferences.setValue("appearance", name)
-        self.appearance_actions[name].setChecked(True)
 
     def tell(self, title: str, text: str) -> None:
         """Show a message (tests replace this to see what would be shown)."""

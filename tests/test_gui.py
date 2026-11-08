@@ -140,15 +140,22 @@ def test_page_screen_opens_with_the_page_scale(app: QApplication, two_pages: Pat
 def test_appearance_is_remembered(app: QApplication, tmp_path: Path) -> None:
     from PySide6.QtCore import QSettings
 
+    from pdf2dwfx import theme
     from pdf2dwfx.gui import apply_appearance
 
     prefs = QSettings(str(tmp_path / "prefs.ini"), QSettings.Format.IniFormat)
     window = MainWindow(prefs)
-    assert window.appearance_actions["system"].isChecked()  # first start: follow the computer
-    window.appearance_actions["dark"].trigger()
-    assert prefs.value("appearance") == "dark"
+    assert window.appearance == "system"  # first start: follow the computer
+    assert window.dark_switch.isChecked() == theme.is_dark("system")
+    assert window.menuBar().actions() == []  # no menu bar: the switch is in the window
+
+    window.dark_switch.setChecked(True)
+    assert prefs.value("appearance") == "dark" and theme.current is theme.DARK
     reopened = MainWindow(QSettings(str(tmp_path / "prefs.ini"), QSettings.Format.IniFormat))
-    assert reopened.appearance_actions["dark"].isChecked()
-    reopened.appearance_actions["light"].trigger()
-    assert MainWindow(prefs).appearance_actions["light"].isChecked()
+    assert reopened.appearance == "dark" and reopened.dark_switch.isChecked()
+
+    reopened.dark_switch.setChecked(False)
+    assert prefs.value("appearance") == "light" and theme.current is theme.LIGHT
+    assert not MainWindow(prefs).dark_switch.isChecked()
     apply_appearance("system")  # leave other tests as they were
+    theme.apply("system")
