@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+from dataclasses import replace
 from typing import Any
 
 import pymupdf
@@ -117,8 +118,12 @@ class _PathWalker(mupdf.FzPathWalker2):
 
 
 def _walk(path: Any) -> list[tuple]:
+    return _walk_fz(mupdf.FzPath(mupdf.ll_fz_keep_path(path)))
+
+
+def _walk_fz(path: mupdf.FzPath) -> list[tuple]:
     walker = _PathWalker()
-    mupdf.fz_walk_path(mupdf.FzPath(mupdf.ll_fz_keep_path(path)), walker, walker.m_internal)
+    mupdf.fz_walk_path(path, walker, walker.m_internal)
     return walker.ops
 
 
@@ -137,6 +142,17 @@ def transform_ops(ops: list[tuple], m: Matrix) -> list[tuple]:
             pts.append(b * x + d * y + f)
         out.append((op[0], *pts))
     return out
+
+
+def _recolour(group: Group, fill: str) -> None:
+    """Paint everything in a group in one colour (Type 3 letters take the
+    text colour)."""
+    for child in group.children:
+        if isinstance(child, Group):
+            _recolour(child, fill)
+        elif isinstance(child, PathShape):
+            style = child.style
+            child.style = replace(style, fill=fill if style.fill else None, stroke=fill if style.stroke else None)
 
 
 def draws_something(ops: list[tuple]) -> bool:
@@ -485,7 +501,7 @@ class _Recorder(mupdf.FzDevice2):
         m = self._sheet_matrix(ctm)
         span = text.head
         while span:
-            self._text_span(mupdf.FzTextSpan(span), m, fill)
+            self._text_span(mupdf.FzTextSpan(span), m, fill, ctm)
             span = span.next
 
     def stroke_text(self, ctx: Any, text: Any, stroke: Any, ctm: Any, cs: Any, color: Any, alpha: float, cp: Any) -> None:
@@ -518,7 +534,37 @@ class _Recorder(mupdf.FzDevice2):
         self.font_keys[address] = key
         return key
 
-    def _text_span(self, span: mupdf.FzTextSpan, m: Matrix, fill: str) -> None:
+    def _text_outlines(self, span: mupdf.FzTextSpan, m: Matrix, fill: str, ctm: Any) -> None:
+        """Draw letters as filled shapes, for fonts a DWFx cannot embed
+        (Type 1/CFF fonts, the standard PDF fonts like Helvetica when not
+        embedded, Type 3 fonts). Looks exactly like the PDF; the letters
+        are then shapes, not searchable text."""
+        font = span.font()
+        trm = span.trm()
+        ops: list[tuple] = []
+        is_type3 = bool(font.m_internal.t3procs)
+        for i in range(span.m_internal.len):
+            item = span.items(i)
+            if item.gid < 0:
+                continue
+            glyph_m = mupdf.FzMatrix(trm.a, trm.b, trm.c, trm.d, item.x, item.y)
+            if is_type3:
+                # Type 3 letters are little drawings: run them through this
+                # device (in the text colour) like any other drawing.
+                group = Group()
+                self._push(group, "type3")
+                mupdf.fz_run_t3_glyph(font, item.gid, mupdf.fz_concat(glyph_m, mupdf.FzMatrix(ctm)), self)
+                self._pop(("type3",))
+                _recolour(group, fill)
+                continue
+            outline = mupdf.fz_outline_glyph(font, item.gid, glyph_m)
+            if outline.m_internal:
+                ops += _walk_fz(outline)
+        ops = transform_ops(ops, m)
+        if draws_something(ops):
+            self._add(PathShape(ops, Style(fill=fill), layer=self.layer))
+
+    def _text_span(self, span: mupdf.FzTextSpan, m: Matrix, fill: str, ctm: Any = None) -> None:
         """Turn one run of letters into text items a viewer lays out itself.
 
         Design Review places letters using the font's own spacing (it keeps
@@ -531,7 +577,9 @@ class _Recorder(mupdf.FzDevice2):
         key = self._font(font)
         count = span.m_internal.len
         if key is None:
-            self._note("text in fonts that cannot be embedded")
+            # Only TrueType fonts can go into a DWFx: draw the letters as shapes.
+            self._note("text in fonts that cannot be embedded (drawn as shapes, not searchable)")
+            self._text_outlines(span, m, fill, ctm)
             return
         trm = span.trm()
         a, b, c, d = concat((trm.a, trm.b, trm.c, trm.d, 0, 0), m)[:4]

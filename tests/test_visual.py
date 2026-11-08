@@ -85,3 +85,16 @@ def test_private_sample_looks_like_pdf(tmp_path: Path, private_tests_dir: Path) 
     dwfx = tmp_path / "out.dwfx"
     assert convert(pdf, dwfx) == []
     assert _difference(pdf, dwfx) < 0.0005
+
+
+def test_text_in_fonts_that_cannot_be_embedded(tmp_path: Path) -> None:
+    """Such text is drawn as shapes: it must look exactly like the PDF."""
+    from synthetic import fonts_pdf
+
+    pdf = fonts_pdf(tmp_path / "fonts.pdf")
+    dwfx = tmp_path / "fonts.dwfx"
+    warnings = convert(pdf, dwfx)
+    assert _difference(pdf, dwfx) < MAX_DIFFERENT
+    assert any("drawn as shapes" in w for w in warnings)
+    # The TrueType line is still real, searchable text.
+    assert "TrueType stays real text" in pymupdf.open(dwfx, filetype="xps")[0].get_text()
