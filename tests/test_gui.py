@@ -135,3 +135,20 @@ def test_page_screen_opens_with_the_page_scale(app: QApplication, two_pages: Pat
     assert editor.sheet_input.text() == "1:50" and [i.scale for i in editor.items()] == [5]
     select(window, 1, 2)
     assert not window.page_button.isEnabled()  # one page at a time
+
+
+def test_appearance_is_remembered(app: QApplication, tmp_path: Path) -> None:
+    from PySide6.QtCore import QSettings
+
+    from pdf2dwfx.gui import apply_appearance
+
+    prefs = QSettings(str(tmp_path / "prefs.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(prefs)
+    assert window.appearance_actions["system"].isChecked()  # first start: follow the computer
+    window.appearance_actions["dark"].trigger()
+    assert prefs.value("appearance") == "dark"
+    reopened = MainWindow(QSettings(str(tmp_path / "prefs.ini"), QSettings.Format.IniFormat))
+    assert reopened.appearance_actions["dark"].isChecked()
+    reopened.appearance_actions["light"].trigger()
+    assert MainWindow(prefs).appearance_actions["light"].isChecked()
+    apply_appearance("system")  # leave other tests as they were

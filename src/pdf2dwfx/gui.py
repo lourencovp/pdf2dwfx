@@ -22,8 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pymupdf
-from PySide6.QtCore import QSize, Qt, QThread, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PySide6.QtCore import QSettings, QSize, Qt, QThread, Signal
+from PySide6.QtGui import QActionGroup, QColor, QGuiApplication, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -64,6 +64,24 @@ STATUS_TEXT = {
     "none": "no scale found: measures as paper (mm)",
     CONFIRMED: "checked by you",
 }
+
+
+# Light or dark window colours; "system" follows the computer's setting.
+APPEARANCES = {
+    "system": ("Follow system", Qt.ColorScheme.Unknown),
+    "light": ("Light", Qt.ColorScheme.Light),
+    "dark": ("Dark", Qt.ColorScheme.Dark),
+}
+
+
+def settings() -> QSettings:
+    """The app's saved preferences, kept where each system keeps them
+    (Windows registry, macOS preferences, a file on Linux); never sent anywhere."""
+    return QSettings("pdf2dwfx", "pdf2dwfx")
+
+
+def apply_appearance(name: str) -> None:
+    QGuiApplication.styleHints().setColorScheme(APPEARANCES.get(name, APPEARANCES["system"])[1])
 
 
 @dataclass
@@ -176,8 +194,9 @@ class Converter(QThread):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, preferences: QSettings | None = None) -> None:
         super().__init__()
+        self.preferences = preferences if preferences is not None else settings()
         self.setWindowTitle(f"pdf2dwfx {__version__}")
         self.resize(1200, 800)
         self.pdf: Path | None = None
@@ -278,6 +297,20 @@ class MainWindow(QMainWindow):
         central = QWidget()
         central.setLayout(layout)
         self.setCentralWidget(central)
+
+        # Menu: View > Appearance (remembered for next time).
+        appearance_menu = self.menuBar().addMenu("&View").addMenu("Appearance")
+        group = QActionGroup(self)
+        self.appearance_actions = {}
+        chosen = str(self.preferences.value("appearance", "system"))
+        for name, (label, _) in APPEARANCES.items():
+            action = appearance_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(name == chosen)
+            action.triggered.connect(lambda _=False, n=name: self.set_appearance(n))
+            group.addAction(action)
+            self.appearance_actions[name] = action
+        self.show_appearance(chosen)
         self.update_buttons()
 
     # Opening a PDF -------------------------------------------------------
@@ -486,6 +519,17 @@ class MainWindow(QMainWindow):
     def show_crash(self, report: str, saved: Path) -> None:
         """Show the crash window (tests replace this)."""
         CrashDialog(report, saved, self).exec()
+
+    def show_appearance(self, name: str) -> None:
+        apply_appearance(name)
+        # Widgets with their own style sheet keep their old colours unless
+        # the sheet is applied again.
+        self.overview.setStyleSheet(self.overview.styleSheet())
+
+    def set_appearance(self, name: str) -> None:
+        self.show_appearance(name)
+        self.preferences.setValue("appearance", name)
+        self.appearance_actions[name].setChecked(True)
 
     def tell(self, title: str, text: str) -> None:
         """Show a message (tests replace this to see what would be shown)."""
