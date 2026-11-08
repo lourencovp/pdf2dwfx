@@ -36,7 +36,13 @@ METRES_PER_PT = 0.0254 / 72
 # Spanish, French, Italian, German).
 _KEYWORD = re.compile(r"(?i)(?<![a-z])(esc(?:ala)?s?|scale|[ée]chelle|scala|ma(?:ss|ß)stab)(?![a-z])")
 # "1:100", "1 : 100", "1/50", "2:1", "1:2,5" ...
-_RATIO = re.compile(r"(?<![\w.,/:])(\d+(?:[.,]\d+)?)\s*([:/])\s*(\d+(?:[.,]\d+)?)(?![\w,]|[.:/]\d)")
+# "1:100", "1 : 50", "1/50", "1_50", "1-50", "1 to 50", "2:1", "1:2,5" ...
+# Not part of a longer chain of numbers ("1-12-2024", "PR_1_50.dwg").
+_RATIO = re.compile(
+    r"(?<![\w.,/:\-–])(\d+(?:[.,]\d+)?)\s*([:/_\-–]|\bto\b)\s*(\d+(?:[.,]\d+)?)"
+    r"(?![\w,]|[.:/_\-–]\d)",
+    re.IGNORECASE,
+)
 # Scales architects and engineers actually use (the number after "1:").
 _USUAL = {1, 2, 2.5, 5, 10, 20, 25, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 750, 1000,
           1250, 1500, 2000, 2500, 5000, 10000, 20000, 25000, 50000, 0.5, 0.2, 0.1}
@@ -144,9 +150,14 @@ def _ratio_scale(match: re.Match[str], announced: bool) -> float | None:
     scale = b / a
     if announced:
         return scale
-    # Without a word like ESCALA, only "1:n" with a usual n: "1/2" is more
-    # often a fraction and "1:7" rarely a scale.
-    if sep == ":" and scale in _USUAL:
+    # Without a word like ESCALA, only usual scales: "1:7" is rarely one.
+    # "1/2" is more often a fraction, and "1-2" or "1_2" a range or a
+    # number, so "/" needs the word, and "-", "_", "to" a scale of 1:5 or less.
+    if scale not in _USUAL:
+        return None
+    if sep == ":":
+        return scale
+    if sep != "/" and scale >= 5:
         return scale
     return None
 

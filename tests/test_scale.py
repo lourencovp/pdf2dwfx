@@ -291,3 +291,27 @@ def test_one_scale_no_warning(tmp_path: Path) -> None:
     pdf = scale_pdf(tmp_path / "s.pdf", detail_title="DETALHE A 1:50")
     s = suggest(pymupdf.open(pdf)[0])
     assert s.scale == 50 and not s.viewports and not s.warning
+
+
+@pytest.mark.parametrize("text", ["1:50", "1 : 50", "1/50", "1_50", "1-50", "1 - 50", "1 to 50", "1 TO 50", "1–50"])
+def test_scale_symbols_typed_by_user(text: str) -> None:
+    assert parse_scale(text) == 50
+
+
+@pytest.mark.parametrize(
+    "text, found",
+    [
+        ("PLANTA 1:50", 50), ("PLANTA 1_50", 50), ("PLANTA 1-50", 50), ("PLANTA 1 to 50", 50),
+        ("CORTE 1 - 20", 20), ("DETALHE 1–5", 5),
+        # not scales: dates, ranges, file names, references
+        ("DATA 1-12-2024", None), ("NOTAS 1-2", None), ("PR2017_PL_1_50.dwg", None),
+        ("IS1-50", None), ("FOLHA 1_2", None), ("ver 1 to 3", None),
+    ],
+)
+def test_scale_symbols_on_the_page(text: str, found: float | None) -> None:
+    doc = pymupdf.open()
+    page = doc.new_page(width=600, height=400)
+    page.insert_font(fontname="F1", fontbuffer=pymupdf.Font("cjk").buffer)
+    page.insert_text((20, 100), text, fontname="F1", fontsize=12)
+    scales = [label.scale for label in scale_labels(page)]
+    assert scales == ([found] if found else [])

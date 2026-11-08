@@ -114,7 +114,7 @@ def imperial_scale(match: re.Match[str]) -> float | None:
 def parse_scale(text: str) -> float | None:
     """The user's way of writing a scale -> the number after "1:".
 
-    "1:100", "1/100", "100" -> 100;  "2:1" -> 0.5;  "paper", "0", "none" -> None
+    "1:100", "1/100", "1_100", "1-100", "1 to 100", "100" -> 100;  "2:1" -> 0.5;  "paper", "0", "none" -> None
     Imperial: 1/4" = 1'-0" -> 48;  1" = 20' -> 240.
     """
     imperial = IMPERIAL.fullmatch(text.strip())
@@ -123,10 +123,11 @@ def parse_scale(text: str) -> float | None:
         if value is None:
             raise ValueError(f"not a scale: {text!r}")
         return value
-    t = text.strip().lower().replace(" ", "").replace(",", ".")
+    t = text.strip().lower().replace(",", ".")
+    t = re.sub(r"\s+to\s+", ":", t).replace(" ", "")
     if t in ("", "0", "paper", "none", "papel", "mm"):
         return None
-    for sep in (":", "/"):
+    for sep in (":", "/", "_", "-", "–"):
         if sep in t:
             left, _, right = t.partition(sep)
             a, b = float(left), float(right)
