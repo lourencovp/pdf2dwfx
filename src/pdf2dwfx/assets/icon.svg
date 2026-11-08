@@ -1,12 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
-  <!-- pdf2dwfx app icon: two sheets of paper (the back one light gray, so
-       they stay apart at small sizes) with a bold door symbol (leaf and
-       swing) on the front one. Grayscale only. -->
-  <rect x="8" y="8" width="240" height="240" rx="52" fill="#111111"/>
-  <rect x="64" y="36" width="156" height="176" rx="12" fill="#BDBDBD"/>
-  <rect x="40" y="60" width="160" height="180" rx="14" fill="#FFFFFF"/>
-  <g fill="none" stroke="#111111" stroke-linecap="round">
-    <path d="M76 208 V98" stroke-width="22"/>
-    <path d="M76 98 A110 110 0 0 1 186 208" stroke-width="14"/>
+  <!-- pdf2dwfx app icon: a white page (the icon itself) with a slightly
+       smaller page on top, both outlined in light gray, and a large black
+       door symbol (leaf and swing) on the top page. -->
+  <rect x="10" y="10" width="236" height="236" rx="48" fill="#FFFFFF" stroke="#BDBDBD" stroke-width="8"/>
+  <rect x="26" y="42" width="188" height="188" rx="28" fill="#FFFFFF" stroke="#BDBDBD" stroke-width="8"/>
+  <g transform="translate(-8 8)" fill="none" stroke="#111111" stroke-linecap="round">
+    <path d="M72 184 V72" stroke-width="24"/>
+    <path d="M72 72 A112 112 0 0 1 184 184" stroke-width="16"/>
   </g>
 </svg>
