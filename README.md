@@ -1,3 +1,5 @@
+<p align="center"><img src="src/pdf2dwfx/assets/icon.svg" alt="pdf2dwfx logo" width="128"></p>
+
 # pdf2dwfx
 
 *[English](#english) · [Português](#português)*
