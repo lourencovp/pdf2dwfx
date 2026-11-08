@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pymupdf
@@ -465,3 +466,18 @@ def fonts_pdf(path: Path) -> Path:
     _append(page, b"BT /F3 40 Tf 0 0.5 0 rg 60 %.2f Td (ABAB) Tj ET" % (297 * MM - 420))
     doc.save(path)
     return path
+
+
+def path_points(data: str) -> list[tuple[int, int]]:
+    """All points of a DWFx path's data ("M" absolute, "l" relative steps)
+    as absolute grid coordinates."""
+    points: list[tuple[int, int]] = []
+    for cmd, numbers in re.findall(r"([Ml])([^Ml]*)", data):
+        values = [int(v) for v in re.findall(r"-?\d+", numbers)]
+        for dx, dy in zip(values[0::2], values[1::2]):
+            if cmd == "M" or not points:
+                points.append((dx, dy))
+            else:
+                x, y = points[-1]
+                points.append((x + dx, y + dy))
+    return points

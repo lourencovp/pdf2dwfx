@@ -13,7 +13,7 @@ from pdf2dwfx.convert import convert
 from pdf2dwfx.scale import CONFIRMED, NO_SCALE, SUGGESTED, PageScale, Viewport, parse_scale
 from pdf2dwfx.suggest import scale_labels, suggest
 from pdf2dwfx.w2x import units_transform
-from synthetic import MM, PAPER_SIZES, scale_pdf, scale_sheet_layout, text_pdf
+from synthetic import MM, PAPER_SIZES, path_points, scale_pdf, scale_sheet_layout, text_pdf
 
 NS = "{http://schemas.microsoft.com/xps/2005/06}"
 
@@ -153,12 +153,8 @@ def _per_unit(transform: str) -> float:
 
 
 def _paths_box(elements) -> tuple[float, float, float, float]:
-    xs, ys = [], []
-    for el in elements:
-        if el.tag == NS + "Path":
-            nums = [int(v) for v in re.findall(r"-?\d+", el.get("Data"))]
-            xs += nums[0::2]
-            ys += nums[1::2]
+    points = [p for el in elements if el.tag == NS + "Path" for p in path_points(el.get("Data"))]
+    xs, ys = [x for x, _ in points], [y for _, y in points]
     return min(xs), min(ys), max(xs), max(ys)
 
 

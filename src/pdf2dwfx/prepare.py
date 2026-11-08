@@ -680,8 +680,39 @@ def _assign_viewports(out: Prepared, sheet: Sheet) -> None:
     out.viewports = found
 
 
+def _is_opaque(color: str | None) -> bool:
+    return color is not None and (len(color) == 7 or color.upper().startswith("#FF"))
+
+
+def _merge_strokes(prims: list[Prim]) -> list[Prim]:
+    """Join lines drawn one after another with exactly the same style,
+    layer and viewport into one shape with several outlines.
+
+    CAD drawings consist mostly of short separate lines (hatches, a wall's
+    edges), and each shape repeats its whole style in the file: joining
+    them makes files several times smaller and looks exactly the same.
+    Only opaque colours: where see-through lines overlap, drawing them as
+    one shape would paint the overlap once instead of twice (lighter).
+    """
+    merged: list[Prim] = []
+    for prim in prims:
+        last = merged[-1] if merged else None
+        if (
+            last is not None and prim.kind == "stroke" and last.kind == "stroke"
+            and prim.style == last.style and prim.layer == last.layer
+            and prim.viewport == last.viewport and _is_opaque(prim.style.stroke)
+        ):
+            last.contours.extend(prim.contours)
+            last.closed.extend(prim.closed)
+        else:
+            # a copy with its own lists, so extending never changes the input
+            merged.append(replace(prim, contours=list(prim.contours), closed=list(prim.closed)))
+    return merged
+
+
 def prepare(sheet: Sheet) -> Prepared:
     p = _Preparer(sheet)
     p.walk(sheet.root.children, None, 1.0, 0.0, 0.0)
     _assign_viewports(p.out, sheet)
+    p.out.prims = _merge_strokes(p.out.prims)
     return p.out

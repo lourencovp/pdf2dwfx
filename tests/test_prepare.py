@@ -155,8 +155,8 @@ def test_group_transparency_moves_into_colour() -> None:
 
 def test_pattern_copies_become_real_geometry() -> None:
     tile = Group(offsets=[(0, 0), (20, 0), (40, 0)], children=[PathShape([("M", 0, 0), ("L", 10, 0)], STROKE)])
-    prims = prepare(_sheet(tile)).prims
-    assert [p.contours[0][0][0] for p in prims] == [0, u(20), u(40)]
+    (prim,) = prepare(_sheet(tile)).prims  # same style one after another: one shape
+    assert [c[0][0] for c in prim.contours] == [0, u(20), u(40)]
 
 
 def test_widths_are_in_grid_units() -> None:

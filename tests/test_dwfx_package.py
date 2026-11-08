@@ -13,7 +13,7 @@ from xml.etree import ElementTree as ET
 import pytest
 
 from pdf2dwfx.convert import convert
-from synthetic import A1_MM, A3_MM, drawing_pdf, features_pdf
+from synthetic import A1_MM, A3_MM, drawing_pdf, features_pdf, path_points
 
 NS_RELS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 NS_CT = "{http://schemas.openxmlformats.org/package/2006/content-types}"
@@ -177,9 +177,10 @@ def test_page_uses_only_what_autodesk_understands(tmp_path: Path, make) -> None:
         assert not list(el), "no child elements (e.g. inline ImageBrush)"
         assert fill.startswith("#") or fill.startswith("{StaticResource ") or not fill
         data = el.get("Data")
-        # Only "M" and "L": a "Z"/"z" (close) makes Design Review fail the
-        # whole page (verified in Design Review).
-        assert re.fullmatch(r"(M-?\d+,-?\d+ L(-?\d+,-?\d+ ?)+ ?)+", data), data[:80]
+        # Only "M" (move) and "l" (relative line steps), whole numbers: a
+        # "Z"/"z" (close) makes Design Review fail the whole page (verified
+        # in Design Review, as are the relative steps).
+        assert re.fullmatch(r"(M-?\d+,-?\d+l-?\d+,-?\d+( -?\d+,-?\d+)*)+", data), data[:80]
         names.append(el.get("Name"))
     # Shapes are numbered 1, 2, 3... so W2X entries can refer to them.
     assert names == [f"N_{i}" for i in range(1, len(names) + 1)]
@@ -241,9 +242,9 @@ def test_pictures_are_registered_like_autocad(tmp_path: Path) -> None:
         expected = ("8", ".jpg") if entry.tag == "Image" else ("12", ".png")
         assert (entry.get("Format"), entry.get("Ref")[-4:]) == expected
         # W2X box = page box with y flipped (y up from the bottom)
-        points = re.findall(r"-?\d+,-?\d+", path.get("Data"))
-        xs = [int(v.split(",")[0]) for v in points]
-        ys = [int(v.split(",")[1]) for v in points]
+        points = path_points(path.get("Data"))
+        xs = [x for x, _ in points]
+        ys = [y for _, y in points]
         x0, y0, x1, y1 = (int(v) for v in entry.get("Area").split(","))
         assert (x0, x1) == (min(xs), max(xs))
         assert (y0, y1) == (height - max(ys), height - min(ys))

@@ -84,7 +84,11 @@ def test_private_sample_looks_like_pdf(tmp_path: Path, private_tests_dir: Path) 
         pytest.skip("singlepdfpage.pdf not present")
     dwfx = tmp_path / "out.dwfx"
     assert convert(pdf, dwfx) == []
-    assert _difference(pdf, dwfx) < 0.0005
+    # Not zero: lines the CAD program drew twice on top of each other are
+    # joined into one shape (prepare._merge_strokes), so their soft
+    # (anti-aliased) edges are shaded once instead of twice. Without soft
+    # edges the pictures are the same, see test_joined_lines_look_the_same.
+    assert _difference(pdf, dwfx) < MAX_DIFFERENT
 
 
 def test_text_in_fonts_that_cannot_be_embedded(tmp_path: Path) -> None:
@@ -98,3 +102,23 @@ def test_text_in_fonts_that_cannot_be_embedded(tmp_path: Path) -> None:
     assert any("drawn as shapes" in w for w in warnings)
     # The TrueType line is still real, searchable text.
     assert "TrueType stays real text" in pymupdf.open(dwfx, filetype="xps")[0].get_text()
+
+
+def test_joined_lines_look_the_same(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Joining lines of the same style into one shape (much smaller files)
+    changes no pixel when drawn without soft edges."""
+    import pdf2dwfx.prepare
+
+    pdf = drawing_pdf(tmp_path / "in.pdf")
+    joined, separate = tmp_path / "joined.dwfx", tmp_path / "separate.dwfx"
+    convert(pdf, joined)
+    monkeypatch.setattr(pdf2dwfx.prepare, "_merge_strokes", lambda prims: prims)
+    convert(pdf, separate)
+    assert joined.stat().st_size < separate.stat().st_size
+    pymupdf.TOOLS.set_aa_level(0)
+    try:
+        a = pymupdf.open(joined, filetype="xps")[0].get_pixmap(dpi=100)
+        b = pymupdf.open(separate, filetype="xps")[0].get_pixmap(dpi=100)
+    finally:
+        pymupdf.TOOLS.set_aa_level(8)
+    assert a.samples == b.samples

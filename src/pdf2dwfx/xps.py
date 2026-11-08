@@ -28,20 +28,25 @@ NAME_PREFIX = "N_"
 
 
 def _data(prim: Prim) -> str:
-    """Path data with only "M" and "L".
+    """Path data: "M" (move to a point) followed by "l" steps, each step
+    relative to the previous point.
 
-    Closed outlines repeat their first point at the end instead of using
-    the "Z" (close) command: tested in Design Review, any path containing
-    "Z" or "z" makes the whole page fail with "There was a problem
-    displaying the page". Repeating the point draws the same shape.
+    Relative steps are short numbers ("l120,-35" instead of
+    "L412345,287619"), which makes files much smaller and changes nothing
+    in the drawing. Closed outlines step back to their first point instead
+    of using "Z" (close): tested in Design Review, any path containing "Z"
+    or "z" makes the whole page fail with "There was a problem displaying
+    the page".
     """
     parts: list[str] = []
     for contour, closed in zip(prim.contours, prim.closed):
         points = contour + [contour[0]] if closed else contour
-        x0, y0 = points[0]
-        rest = " ".join(f"{x},{y}" for x, y in points[1:])
-        parts.append(f"M{x0},{y0} L{rest}")
-    return " ".join(parts)
+        (x, y), steps = points[0], []
+        for nx, ny in points[1:]:
+            steps.append(f"{nx - x},{ny - y}")
+            x, y = nx, ny
+        parts.append(f"M{points[0][0]},{points[0][1]}l{' '.join(steps)}")
+    return "".join(parts)
 
 
 def _stroke_attrs(style: Style) -> str:
