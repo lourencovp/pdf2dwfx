@@ -43,6 +43,8 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from .convert import convert
+from .crash import make_report, save_report
+from .crash_dialog import CrashDialog
 from .page_editor import PageEditor, render_page
 from .parallel import document, ordered_map, worker_count
 from .scale import CONFIRMED, SUGGESTED, PageScale, confirmed, parse_scale, with_sheet_scale
@@ -129,7 +131,8 @@ class Loader(QThread):
     """Reads pages in the background and hands them over one by one."""
 
     page_ready = Signal(object)  # LoadedPage
-    failed = Signal(str)
+    failed = Signal(str)  # a PDF that cannot be opened: told plainly
+    crashed = Signal(object)  # anything unexpected: a crash report
 
     def __init__(self, pdf: Path) -> None:
         super().__init__()
@@ -145,6 +148,8 @@ class Loader(QThread):
                 self.page_ready.emit(page)
         except (OSError, ValueError, RuntimeError) as error:
             self.failed.emit(str(error))
+        except Exception as error:
+            self.crashed.emit(error)
 
 
 class Converter(QThread):
@@ -152,7 +157,8 @@ class Converter(QThread):
 
     progress = Signal(int, int)  # done, total
     done = Signal(list)  # warnings
-    failed = Signal(str)
+    failed = Signal(str)  # e.g. the file cannot be written: told plainly
+    crashed = Signal(object)  # anything unexpected: a crash report
 
     def __init__(self, pdf: Path, dwfx: Path, scales: dict[int, PageScale]) -> None:
         super().__init__()
@@ -163,6 +169,8 @@ class Converter(QThread):
             warnings = convert(self.pdf, self.dwfx, sorted(self.scales), self.scales, self.progress.emit)
         except (OSError, ValueError, RuntimeError) as error:
             self.failed.emit(str(error))
+        except Exception as error:
+            self.crashed.emit(error)
         else:
             self.done.emit(warnings)
 
@@ -290,6 +298,7 @@ class MainWindow(QMainWindow):
         self.loader = Loader(pdf)
         self.loader.page_ready.connect(self.add_page)
         self.loader.failed.connect(self.loading_failed)
+        self.loader.crashed.connect(self.crashed)
         self.loader.finished.connect(self.loading_finished)
         self.loader.start()
         self.update_buttons()
@@ -434,6 +443,7 @@ class MainWindow(QMainWindow):
         self.converter.progress.connect(self.show_progress)
         self.converter.done.connect(lambda warnings: self.convert_done(dwfx, warnings))
         self.converter.failed.connect(self.convert_failed)
+        self.converter.crashed.connect(lambda error: self.crashed(error, [str(dwfx)]))
         self.converter.finished.connect(self.convert_finished)
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
@@ -462,6 +472,21 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------------------
 
+    def crashed(self, error: BaseException, private: list[str] | None = None) -> None:
+        """Something unexpected went wrong: save a report and show it."""
+        if self.progress.format().startswith("Converting"):
+            self.progress.setFormat("Failed")
+        try:
+            report = make_report(error, self.pdf, private)
+            saved = save_report(report)
+        except Exception:  # never crash while reporting a crash
+            return
+        self.show_crash(report, saved)
+
+    def show_crash(self, report: str, saved: Path) -> None:
+        """Show the crash window (tests replace this)."""
+        CrashDialog(report, saved, self).exec()
+
     def tell(self, title: str, text: str) -> None:
         """Show a message (tests replace this to see what would be shown)."""
         QMessageBox.information(self, title, text)
@@ -489,6 +514,10 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv if argv is None else argv
     app = QApplication.instance() or QApplication(argv)
     window = MainWindow()
+    # Unexpected errors anywhere in the app open the crash window instead
+    # of silently stopping. (Errors in background work are passed on by
+    # Loader and Converter; Qt routes errors in the window to sys.excepthook.)
+    sys.excepthook = lambda kind, error, tb: window.crashed(error)
     window.show()
     if len(argv) > 1:
         window.open_pdf(Path(argv[1]))

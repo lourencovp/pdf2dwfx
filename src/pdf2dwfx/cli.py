@@ -16,6 +16,7 @@ import pymupdf
 
 from . import __version__
 from .convert import convert, parse_pages
+from .crash import NEW_ISSUE, make_report, save_report
 from .scale import CONFIRMED, SUGGESTED, PageScale, Viewport, format_scale, parse_scale
 from .suggest import PT_PER_MM, scale_plan
 
@@ -137,6 +138,21 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, RuntimeError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
+    except Exception as error:
+        # Unexpected: save a crash report (nothing is sent; see crash.py).
+        try:
+            saved = save_report(make_report(error, args.pdf, [str(output)]))
+        except Exception:
+            raise error from None
+        print(
+            "Something unexpected went wrong. A crash report was saved here:\n"
+            f"  {saved}\n"
+            "It holds no drawing content or file names. To help fix it, open a new issue at\n"
+            f"  {NEW_ISSUE}\n"
+            "and paste the report into it.",
+            file=sys.stderr,
+        )
+        return 2
     print(f"Written: {output}")
     several = [str(n) for n in pages if plan[n].warning]
     if several:
