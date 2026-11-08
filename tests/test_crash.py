@@ -65,7 +65,9 @@ def test_scrub_removes_other_paths_but_keeps_program_files() -> None:
 def test_report_saved_locally(tmp_path: Path, reports_in_tmp: Path) -> None:
     saved = save_report("hello")
     assert saved.parent == reports_in_tmp and saved.read_text(encoding="utf-8") == "hello"
-    assert save_report("again") != saved  # never overwrites an earlier report
+    again = save_report("again")  # same second: must not overwrite the first
+    assert again != saved and saved.read_text(encoding="utf-8") == "hello"
+    assert again.read_text(encoding="utf-8") == "again"
 
 
 def test_report_folder_is_the_users_own() -> None:

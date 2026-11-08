@@ -105,9 +105,18 @@ def save_report(text: str, folder: Path | None = None) -> Path:
     """Write the report to a new file in the report folder; returns its path."""
     folder = folder or report_folder()
     folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"crash-{datetime.now():%Y%m%d-%H%M%S-%f}.txt"
-    path.write_text(text, encoding="utf-8")
-    return path
+    stamp = f"crash-{datetime.now():%Y%m%d-%H%M%S}"
+    number = 1
+    while True:
+        path = folder / (f"{stamp}.txt" if number == 1 else f"{stamp}-{number}.txt")
+        try:
+            # "x": only create a new file, never overwrite an earlier report
+            # (the clock may show the same time for two quick reports).
+            with path.open("x", encoding="utf-8") as file:
+                file.write(text)
+            return path
+        except FileExistsError:
+            number += 1
 
 
 def issue_url(report: str) -> str:
