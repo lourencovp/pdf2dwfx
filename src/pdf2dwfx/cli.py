@@ -60,7 +60,8 @@ def _warning_sign() -> str:
     """The warning sign, or "(!)" where the console cannot show it."""
     sign = "⚠️"
     try:
-        sign.encode(sys.stdout.encoding or "ascii")
+        # (no console at all, e.g. the packaged app started by another program: stdout is None)
+        sign.encode(getattr(sys.stdout, "encoding", None) or "ascii")
         return sign
     except (UnicodeEncodeError, LookupError):
         return "(!)"

@@ -97,3 +97,15 @@ def test_imperial_scale_typed_by_user(tmp_path: Path) -> None:
     pdf = scale_pdf(tmp_path / "s.pdf")
     assert main([str(pdf), "--scale", "1=1/4\" = 1'-0\""]) == 0
     assert abs(_units(tmp_path / "s.dwfx")[0] - UNITS_PER_MM * 1000 / 48) < 0.001  # 1:48
+
+
+def test_works_without_a_console(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The packaged app has no console when another program starts it:
+    there is nowhere to print to, but converting must still work."""
+    from synthetic import scale_pdf
+
+    pdf = scale_pdf(tmp_path / "s.pdf")  # has a warning sign to print
+    monkeypatch.setattr("sys.stdout", None)
+    monkeypatch.setattr("sys.stderr", None)
+    assert main([str(pdf)]) == 0
+    assert (tmp_path / "s.dwfx").exists()
