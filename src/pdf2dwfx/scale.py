@@ -138,3 +138,19 @@ def parse_scale(text: str) -> float | None:
     if value <= 0:
         raise ValueError(f"not a scale: {text!r}")
     return value
+
+
+# What the user can do with a page's scale (the scale window calls these;
+# they do not change the page they are given, they return the new one).
+
+
+def with_sheet_scale(page: PageScale, scale: float | None) -> PageScale:
+    """The user chose one scale for the whole sheet (None = paper, mm).
+
+    One scale for the sheet means one drawing: suggested viewports go."""
+    return PageScale(scale, [], CONFIRMED, "user", [], page.found)
+
+
+def confirmed(page: PageScale) -> PageScale:
+    """The user checked the suggestion and accepts it as it is."""
+    return PageScale(page.scale, list(page.viewports), CONFIRMED, page.source or "user", [], page.found)

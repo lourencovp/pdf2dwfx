@@ -18,7 +18,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 import zipfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from xml.sax.saxutils import quoteattr
 
@@ -145,8 +145,10 @@ def _descriptor(sheet: Sheet, order: int, fpage_part: str, resources: list[_Reso
     ).encode("utf-8")
 
 
-def build_parts(sheets: Sequence[Sheet]) -> dict[str, bytes]:
-    """Return every part of the package as {part name: content}."""
+def build_parts(sheets: Sequence[Sheet], sheet_done: Callable[[], None] | None = None) -> dict[str, bytes]:
+    """Return every part of the package as {part name: content}.
+
+    ``sheet_done`` is called after each sheet (for a progress bar)."""
     if not sheets:
         raise ValueError("a DWFx file needs at least one sheet")
     doc = f"/dwf/documents/{_guid()}"
@@ -162,6 +164,8 @@ def build_parts(sheets: Sequence[Sheet]) -> dict[str, bytes]:
         fpage = f"{folder}/FixedPage.fpage"
         w2x_part = f"{folder}/W2X.xml"
         prepared = prepare(sheet)
+        if sheet_done:
+            sheet_done()
 
         # Pictures: each distinct picture stored once, next to the page.
         sources: dict[str, str] = {}  # picture key -> "./file" (relative to the page)
@@ -292,8 +296,8 @@ def build_parts(sheets: Sequence[Sheet]) -> dict[str, bytes]:
     return parts
 
 
-def write_dwfx(path: Path, sheets: Sequence[Sheet]) -> None:
-    parts = build_parts(sheets)
+def write_dwfx(path: Path, sheets: Sequence[Sheet], sheet_done: Callable[[], None] | None = None) -> None:
+    parts = build_parts(sheets, sheet_done)
     # The content-types file goes first, as AutoCAD and most OPC tools do.
     order = ["/[Content_Types].xml"] + [p for p in parts if p != "/[Content_Types].xml"]
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as z:

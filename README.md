@@ -53,6 +53,7 @@ Requires [uv](https://docs.astral.sh/uv/).
 ```sh
 uv sync          # install dependencies
 uv run pytest    # run the tests
+uv run pdf2dwfx-app [drawing.pdf]   # the app window: check scales, convert
 
 uv run pdf2dwfx drawing.pdf              # writes drawing.dwfx next to the PDF
 uv run pdf2dwfx drawing.pdf --pages 1-3,7 -o sheets.dwfx

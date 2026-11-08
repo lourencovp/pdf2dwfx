@@ -33,6 +33,7 @@ def convert(
     dwfx_path: Path,
     pages: int | Sequence[int] | None = None,
     scales: Mapping[int, PageScale] | Callable[[pymupdf.Page], PageScale | None] | None = None,
+    progress: Callable[[int, int], None] | None = None,
 ) -> list[str]:
     """Convert PDF pages into one DWFx file with one sheet per page.
 
@@ -41,7 +42,8 @@ def convert(
     page number, or a function that works it out from the page (see
     suggest.py); pages without one measure as paper (mm). Returns
     warnings: PDF features that could not be reproduced, totalled over all
-    converted pages.
+    converted pages. ``progress(done, total)`` is called as the work
+    goes on (for a progress bar): each page is read, then prepared.
     """
     with pymupdf.open(pdf_path) as doc:
         if pages is None:
@@ -53,6 +55,15 @@ def convert(
         for n in numbers:
             if not 1 <= n <= doc.page_count:
                 raise ValueError(f"page {n} does not exist (the PDF has {doc.page_count} pages)")
+        total = 2 * len(numbers)
+        done = 0
+
+        def step() -> None:
+            nonlocal done
+            done += 1
+            if progress:
+                progress(done, total)
+
         sheets = []
         for n in numbers:
             sheet = read_page(doc[n - 1])
@@ -61,7 +72,8 @@ def convert(
             elif scales is not None:
                 sheet.scale = scales.get(n)
             sheets.append(sheet)
-    write_dwfx(dwfx_path, sheets)
+            step()
+    write_dwfx(dwfx_path, sheets, step)
     totals: Counter[str] = Counter()
     for sheet in sheets:
         totals.update(sheet.unsupported)

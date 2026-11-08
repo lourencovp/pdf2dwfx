@@ -12,10 +12,15 @@ requires-python = ">=3.12"
 dependencies = [
     "pyclipper>=1.4.0",
     "pymupdf<2",
+    "pyside6-essentials>=6.12.0",
 ]
 
 [project.scripts]
 pdf2dwfx = "pdf2dwfx.cli:main"
+
+# The app window (no console window on Windows).
+[project.gui-scripts]
+pdf2dwfx-app = "pdf2dwfx.gui:main"
 
 [build-system]
 requires = ["uv_build>=0.13.7,<0.14.0"]
