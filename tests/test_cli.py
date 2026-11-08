@@ -78,3 +78,20 @@ def test_bad_scale_input_is_explained(tmp_path: Path, capsys: pytest.CaptureFixt
     pdf = drawing_pdf(tmp_path / "plan.pdf")
     assert main([str(pdf), *args]) == 1
     assert "Error:" in capsys.readouterr().err
+
+
+def test_several_scales_are_flagged(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from synthetic import scale_pdf
+
+    pdf = scale_pdf(tmp_path / "s.pdf")
+    assert main([str(pdf), "--show-scales"]) == 0
+    out = capsys.readouterr().out
+    assert "several scales on this page" in out
+
+
+def test_imperial_scale_typed_by_user(tmp_path: Path) -> None:
+    from synthetic import scale_pdf
+
+    pdf = scale_pdf(tmp_path / "s.pdf")
+    assert main([str(pdf), "--scale", "1=1/4\" = 1'-0\""]) == 0
+    assert abs(float(_units(tmp_path / "s.dwfx")[0]) - 1_000_000 / 48) < 0.001  # 1:48

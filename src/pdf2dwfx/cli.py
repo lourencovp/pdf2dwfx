@@ -54,8 +54,19 @@ def parse_viewport(spec: str, page_count: int) -> tuple[int, Viewport]:
     return n, Viewport((x0, y0, x1, y1), scale, f"Viewport 1:{value.strip().split(':')[-1]}")
 
 
+def _warning_sign() -> str:
+    """The warning sign, or "(!)" where the console cannot show it."""
+    sign = "⚠️"
+    try:
+        sign.encode(sys.stdout.encoding or "ascii")
+        return sign
+    except (UnicodeEncodeError, LookupError):
+        return "(!)"
+
+
 def describe(n: int, s: PageScale) -> list[str]:
-    lines = [f"  page {n:>3}: {s.describe():<32} ({_STATUS.get(s.status, s.status)})"]
+    mark = _warning_sign() if s.warning else "  "
+    lines = [f"{mark}page {n:>3}: {s.describe():<32} ({_STATUS.get(s.status, s.status)})"]
     for v in s.viewports:
         x0, y0, x1, y1 = (round(c / PT_PER_MM) for c in v.box)
         lines.append(f"            viewport 1:{v.scale:g} at {x0},{y0},{x1},{y1} mm  {v.label}")
@@ -94,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--version", action="version", version=f"pdf2dwfx {__version__}")
     args = parser.parse_args(argv)
-    # Drawing titles may contain letters a console cannot show (e.g. "�" on
+    # Drawing titles may contain letters a console cannot show (e.g. "Ç" on
     # an old Windows console): show a replacement instead of crashing.
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
@@ -124,6 +135,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: {error}", file=sys.stderr)
         return 1
     print(f"Written: {output}")
+    several = [str(n) for n in pages if plan[n].warning]
+    if several:
+        print(f"{_warning_sign()} Several scales on page(s) {', '.join(several)}: please check them and set them up "
+              '(--scale for the sheet, --viewport for each drawing).')
     unchecked = [n for n in pages if plan[n].status == SUGGESTED]
     if unchecked:
         print(f"Scales not yet checked by you on {len(unchecked)} page(s): please check them in Design Review.")

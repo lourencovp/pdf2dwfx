@@ -247,3 +247,47 @@ def test_private_sample_scales(private_tests_dir: Path) -> None:
         s = suggest(doc[n - 1])
         assert (s.scale, sorted(v.scale for v in s.viewports)) == (scale, viewports), n
     assert suggest(doc[20]).notes  # title block disagrees with the drawings
+
+
+
+@pytest.mark.parametrize(
+    "text, scale",
+    [('1/4" = 1\'-0"', 48), ('1/8"=1\'-0"', 96), ('3/16" = 1\'-0"', 64), ('1-1/2" = 1\'-0"', 8),
+     ('1 1/2" = 1\'-0"', 8), ('3" = 1\'-0"', 4), ('1" = 20\'', 240), ('1" = 20\'-0"', 240),
+     ("1/4 in = 1 ft", 48), ("1/4″ = 1′-0″", 48), ("1/4” = 1’-0”", 48)],
+)
+def test_imperial_scales(text: str, scale: float) -> None:
+    """Imperial scales are ratios too: 1/4 inch per foot is 1:48."""
+    assert parse_scale(text) == scale
+
+
+@pytest.mark.parametrize("paper", [(279.4, 215.9), (914.4, 609.6)], ids=["Letter landscape", "ARCH D"])
+def test_imperial_sheet(tmp_path: Path, paper) -> None:
+    """A US-style sheet: scales written in feet and inches, measured in metres."""
+    pdf = scale_pdf(
+        tmp_path / "s.pdf", paper, plan_title='FLOOR PLAN 1/8" = 1\'-0"',
+        detail_title='DETAIL A 3" = 1\'-0"', keyword="SCALE:", title_block_scale='1/8" = 1\'-0"',
+    )
+    s = suggest(pymupdf.open(pdf)[0])
+    assert s.scale == 96 and [v.scale for v in s.viewports] == [4]
+    out = tmp_path / "s.dwfx"
+    convert(pdf, out, scales=suggest)
+    w2x, _ = _w2x_and_page(out)
+    # 1 m at 1:96 = 1000/96 mm of paper; 1 ft (0.3048 m) = 1/8 inch exactly.
+    per_metre = _per_unit(w2x.find("Units").get("Transform"))
+    assert abs(0.3048 * per_metre - 3175) < 0.01  # 1/8 inch = 3.175 mm = 3175 grid units
+
+
+def test_several_scales_warning(tmp_path: Path) -> None:
+    s = suggest(pymupdf.open(scale_pdf(tmp_path / "s.pdf"))[0])
+    assert s.warning and s.several_scales
+    assert s.notes[0].startswith("several scales on this page (1:50, 1:5)")
+    # once the user has set the page up, no more warning
+    s.status = CONFIRMED
+    assert not s.warning
+
+
+def test_one_scale_no_warning(tmp_path: Path) -> None:
+    pdf = scale_pdf(tmp_path / "s.pdf", detail_title="DETALHE A 1:50")
+    s = suggest(pymupdf.open(pdf)[0])
+    assert s.scale == 50 and not s.viewports and not s.warning

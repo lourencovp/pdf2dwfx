@@ -311,6 +311,9 @@ def scale_pdf(
     title_block_scale: str = "1 : 50",
     measure_data: bool = False,
     clipped: bool = True,
+    plan_title: str = "PLANTA PISO 1 | 1:50",
+    detail_title: str = "DETALHE A 1:5",
+    keyword: str = "ESCALA:",
 ) -> Path:
     """A sheet like an architect's layout: a 1:50 plan and a 1:5 detail,
     each clipped to its viewport (as CAD programs export them) with its
@@ -351,9 +354,9 @@ def scale_pdf(
             shape.draw_line(pymupdf.Point(x, box.y0), pymupdf.Point(x, box.y1))
         shape.finish(color=(0, 0, 0), width=0.3)
         shape.commit()
-    page.insert_text(at(*layout["plan_title"][:2]), "PLANTA PISO 1 | 1:50", fontname="F1", fontsize=text_size)
-    page.insert_text(at(*layout["detail_title"][:2]), "DETALHE A 1:5", fontname="F1", fontsize=text_size)
-    page.insert_text(at(*layout["keyword"][:2]), "ESCALA:", fontname="F1", fontsize=text_size * 0.5)
+    page.insert_text(at(*layout["plan_title"][:2]), plan_title, fontname="F1", fontsize=text_size)
+    page.insert_text(at(*layout["detail_title"][:2]), detail_title, fontname="F1", fontsize=text_size)
+    page.insert_text(at(*layout["keyword"][:2]), keyword, fontname="F1", fontsize=text_size * 0.5)
     page.insert_text(at(*layout["title_scale"][:2]), title_block_scale, fontname="F1", fontsize=text_size * 0.8)
     page.insert_text(at(*layout["sheet_number"][:2]), "3 / 28", fontname="F1", fontsize=text_size)
     # Clip each drawing to its viewport, as CAD exports do: wrap the

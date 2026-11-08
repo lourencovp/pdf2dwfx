@@ -27,7 +27,7 @@ from dataclasses import dataclass
 import pymupdf
 from pymupdf import mupdf
 
-from .scale import CONFIRMED, NO_SCALE, SUGGESTED, PageScale, Viewport, format_scale
+from .scale import CONFIRMED, IMPERIAL, NO_SCALE, SUGGESTED, PageScale, Viewport, format_scale, imperial_scale
 
 PT_PER_MM = 72 / 25.4
 METRES_PER_PT = 0.0254 / 72
@@ -169,14 +169,22 @@ def scale_labels(page: pymupdf.Page) -> list[ScaleLabel]:
             lines.append((text, box, max(s["size"] for s in line["spans"])))
     # Lines that are only an announcing word, e.g. "ESCALA:" in a title
     # block cell, with the value in the line below or beside it.
-    keyword_lines = [box for text, box, _ in lines if _KEYWORD.search(text) and not _RATIO.search(text)]
+    keyword_lines = [
+        box for text, box, _ in lines
+        if _KEYWORD.search(text) and not _RATIO.search(text) and not IMPERIAL.search(text)
+    ]
     found: dict[tuple, ScaleLabel] = {}
     for text, box, size in lines:
+        # Imperial scales (1/4" = 1'-0") first; their "1/4" is not a 1:4 scale.
+        imperial = list(IMPERIAL.finditer(text))
+        candidates = [(m.start(), imperial_scale(m)) for m in imperial]
         for match in _RATIO.finditer(text):
-            announced = bool(_KEYWORD.search(text[: match.start()])) or any(
-                _near_keyword(box, k) for k in keyword_lines
-            )
-            scale = _ratio_scale(match, announced)
+            if any(m.start() <= match.start() < m.end() for m in imperial):
+                continue
+            candidates.append((match.start(), match))  # type: ignore[arg-type]
+        for start, value in candidates:
+            announced = bool(_KEYWORD.search(text[:start])) or any(_near_keyword(box, k) for k in keyword_lines)
+            scale = value if not isinstance(value, re.Match) else _ratio_scale(value, announced)
             if scale is None:
                 continue
             key = (round(box[0]), round(box[1]), scale)
@@ -419,7 +427,17 @@ def suggest(page: pymupdf.Page) -> PageScale:
                 notes.append(f"could not find the drawing titled {label.text!r}: please mark its area")
                 continue
             viewports.append(Viewport(area, label.scale, label.text))
-    return PageScale(sheet_scale, viewports, SUGGESTED, "text", notes)
+    found = sorted({label.scale for label in labels}, reverse=True)
+    return _with_warning(PageScale(sheet_scale, viewports, SUGGESTED, "text", notes, found))
+
+
+def _with_warning(result: PageScale) -> PageScale:
+    """Several scale values on one page: say so first, so the user sets the
+    page up (sheet scale and viewports) and confirms it."""
+    if result.several_scales:
+        values = ", ".join(f"1:{format_scale(v)}" for v in result.found)
+        result.notes.insert(0, f"several scales on this page ({values}): please check and set up")
+    return result
 
 
 def _from_pdf_data(page: pymupdf.Page, vps: list[Viewport]) -> PageScale:
@@ -429,7 +447,8 @@ def _from_pdf_data(page: pymupdf.Page, vps: list[Viewport]) -> PageScale:
     big = [v for v in vps if (v.box[2] - v.box[0]) * (v.box[3] - v.box[1]) >= 0.8 * area]
     sheet_scale = big[0].scale if len(big) == 1 else None
     rest = [v for v in vps if not (len(big) == 1 and v is big[0])]
-    return PageScale(sheet_scale, rest, SUGGESTED, "pdf", [])
+    found = sorted({v.scale for v in vps}, reverse=True)
+    return _with_warning(PageScale(sheet_scale, rest, SUGGESTED, "pdf", [], found))
 
 
 def _list(scales: Counter) -> str:

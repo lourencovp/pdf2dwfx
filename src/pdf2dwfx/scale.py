@@ -14,6 +14,7 @@ the same for every paper size: 10 mm on paper at 1:100 is always 1 m.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 # Status of a page's scale (colours in the scale window: yellow, purple, green).
@@ -45,6 +46,19 @@ class PageScale:
     status: str = NO_SCALE
     source: str = ""  # where it came from: "pdf", "text" or "user"
     notes: list[str] = field(default_factory=list)  # things the user should check
+    found: list[float] = field(default_factory=list)  # every scale value seen on the page
+
+    @property
+    def several_scales(self) -> bool:
+        """More than one scale value on the page."""
+        return len(set(self.found)) > 1
+
+    @property
+    def warning(self) -> bool:
+        """Show a warning sign: several scale values on a page the user
+        has not checked yet. The user sets such pages up (sheet scale and
+        viewports) and confirms them."""
+        return self.status == SUGGESTED and self.several_scales
 
     def describe(self) -> str:
         """One line for people, e.g. "1:100 + viewports 1:5"."""
@@ -60,11 +74,55 @@ def format_scale(scale: float) -> str:
     return f"{scale:g}"
 
 
+# Imperial scales: 1/4" = 1'-0" (architectural), 1" = 20' (engineering).
+# A scale is only a ratio, so these become ordinary "1:n" scales: 1/4 inch
+# of paper for 12 inches (1 ft) of building is 1:48. Inch and foot marks
+# come in several forms (straight and typographic quotes, primes, in/ft).
+_NUMBER = r"\d+(?:[.,]\d+)?(?:(?:\s+|\s*-\s*)\d+/\d+)?|\d+/\d+"
+_INCH = r"(?:\"|''|″|”|\s?in\b\.?)"
+_FOOT = r"(?:'|′|’|\s?ft\b\.?)"
+IMPERIAL = re.compile(
+    rf"(?<![\d/.])({_NUMBER})\s*{_INCH}\s*=\s*(\d+(?:[.,]\d+)?)\s*{_FOOT}"
+    rf"(?:\s*-?\s*({_NUMBER})\s*{_INCH})?",
+    re.IGNORECASE,
+)
+
+
+def _inches(text: str) -> float:
+    """ "1/4" -> 0.25, "1 1/2" or "1-1/2" -> 1.5, "3" -> 3."""
+    total = 0.0
+    for part in re.split(r"\s+|\s*-\s*", text.strip()):
+        if "/" in part:
+            a, b = part.split("/")
+            total += float(a) / float(b)
+        elif part:
+            total += float(part.replace(",", "."))
+    return total
+
+
+def imperial_scale(match: re.Match[str]) -> float | None:
+    """The "1:n" number of an imperial scale found with IMPERIAL."""
+    paper = _inches(match.group(1))
+    real = float(match.group(2).replace(",", ".")) * 12
+    if match.group(3):
+        real += _inches(match.group(3))
+    if paper <= 0 or real <= 0:
+        return None
+    return real / paper
+
+
 def parse_scale(text: str) -> float | None:
     """The user's way of writing a scale -> the number after "1:".
 
     "1:100", "1/100", "100" -> 100;  "2:1" -> 0.5;  "paper", "0", "none" -> None
+    Imperial: 1/4" = 1'-0" -> 48;  1" = 20' -> 240.
     """
+    imperial = IMPERIAL.fullmatch(text.strip())
+    if imperial:
+        value = imperial_scale(imperial)
+        if value is None:
+            raise ValueError(f"not a scale: {text!r}")
+        return value
     t = text.strip().lower().replace(" ", "").replace(",", ".")
     if t in ("", "0", "paper", "none", "papel", "mm"):
         return None
