@@ -6,7 +6,8 @@ Design Review) understands; see prepare.py for the background:
 * every shape is a ``<Path>`` with a ``Name`` made of the W2X name prefix
   and a running number, so W2X entries can refer to it,
 * coordinates are whole numbers on the prepared grid,
-* path data uses only "M" (move), "L" (line) and "Z" (close).
+* path data uses only "M" (move) and "L" (line), see ``_data``,
+* viewports (areas with their own scale) are named canvases, see ``layout``.
 """
 
 from __future__ import annotations
@@ -68,6 +69,46 @@ def _stroke_attrs(style: Style) -> str:
 
 def shape_name(index: int) -> str:
     return f"{NAME_PREFIX}{index}"
+
+
+# One entry of the page, in writing order (see ``layout``).
+OPEN, SHAPE, CLOSE = "open", "shape", "close"
+
+
+def layout(prepared: Prepared) -> list[tuple[str, str, int]]:
+    """The page's elements in writing order: (what, name, index).
+
+    ``SHAPE``: shape number ``index`` in prepared.prims (counted from 1).
+    ``OPEN``: a canvas for viewport ``index`` starts; ``CLOSE``: it ends.
+
+    Autodesk's translator numbers shapes *and* canvases in one running
+    sequence (its Name/refName counter goes up for both), so the page and
+    the W2X file must use exactly the same numbering: both are written
+    from this list. Shapes of a viewport go inside that viewport's canvas;
+    drawing order is kept by closing and reopening canvases when needed.
+    """
+    items: list[tuple[str, str, int]] = []
+    number = 0
+    current: int | None = None
+    for index, prim in enumerate(prepared.prims, start=1):
+        if prim.viewport != current:
+            if current is not None:
+                items.append((CLOSE, "", current))
+            if prim.viewport is not None:
+                number += 1
+                items.append((OPEN, shape_name(number), prim.viewport))
+            current = prim.viewport
+        number += 1
+        items.append((SHAPE, shape_name(number), index))
+    if current is not None:
+        items.append((CLOSE, "", current))
+    return items
+
+
+def box_data(box: tuple[int, int, int, int]) -> str:
+    """A rectangle as path data (M and L only, see _data)."""
+    x0, y0, x1, y1 = box
+    return f"M{x0},{y0} L{x1},{y0} {x1},{y1} {x0},{y1} {x0},{y0}"
 
 
 def brush_key(index: int) -> str:
@@ -169,9 +210,19 @@ def fixed_page(
     ]
     if dictionary_source:
         out.append(f'<Canvas.Resources><ResourceDictionary Source="{dictionary_source}"/></Canvas.Resources>')
-    for index, prim in enumerate(prepared.prims, start=1):
+    for what, name, index in layout(prepared):
+        if what == OPEN:
+            # A viewport: its outline (Clip) tells Design Review where the
+            # viewport's scale applies; the W2X file gives the scale.
+            clip = prepared.viewports[index].clip
+            out.append(f'<Canvas Name="{name}" Clip="{box_data(clip)}">')
+            continue
+        if what == CLOSE:
+            out.append("</Canvas>")
+            continue
+        prim = prepared.prims[index - 1]
         if prim.kind == "text":
-            out.append(_glyphs(shape_name(index), prim, (font_uris or {})[prim.text.font]))  # type: ignore[union-attr]
+            out.append(_glyphs(name, prim, (font_uris or {})[prim.text.font]))  # type: ignore[union-attr]
             continue
         if prim.kind == "fill":
             paint = f'Fill="{prim.style.fill}"'
@@ -179,6 +230,6 @@ def fixed_page(
             paint = f'Fill="{{StaticResource {brush_key(index)}}}"'
         else:
             paint = _stroke_attrs(prim.style)
-        out.append(f'<Path Name="{shape_name(index)}" {paint} Data="{_data(prim)}"/>')
+        out.append(f'<Path Name="{name}" {paint} Data="{_data(prim)}"/>')
     out.append("</Canvas></Canvas></FixedPage>")
     return "".join(out).encode("utf-8")

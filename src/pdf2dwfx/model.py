@@ -13,6 +13,8 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 
+from .scale import PageScale
+
 # A 2D affine transform in PDF/XPS order (a, b, c, d, e, f):
 #   x' = a*x + c*y + e,   y' = b*x + d*y + f
 Matrix = tuple[float, float, float, float, float, float]
@@ -130,6 +132,8 @@ class Sheet:
     # PDF features we met but cannot (yet) reproduce, with how often. Lets
     # the program warn the user instead of silently producing a wrong sheet.
     unsupported: Counter[str] = field(default_factory=Counter)
+    # Drawing scale(s) of the sheet; None = measured as paper (mm).
+    scale: PageScale | None = None
 
     @property
     def width_mm(self) -> float:

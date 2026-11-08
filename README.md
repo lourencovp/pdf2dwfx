@@ -55,7 +55,19 @@ uv sync          # install dependencies
 uv run pytest    # run the tests
 
 uv run pdf2dwfx drawing.pdf              # writes drawing.dwfx next to the PDF
-uv run pdf2dwfx drawing.pdf --page 3 -o sheet3.dwfx
+uv run pdf2dwfx drawing.pdf --pages 1-3,7 -o sheets.dwfx
+```
+
+**Scales.** Each sheet measures in metres in Design Review. The scale of
+each page is found automatically (from PDF measurement data, or from scale
+texts such as "ESCALA: 1:100" and drawing titles such as "CORTE AA' 1:5",
+which get their own viewport). Check and correct them:
+
+```sh
+uv run pdf2dwfx drawing.pdf --show-scales                  # list what was found, do not convert
+uv run pdf2dwfx drawing.pdf --scale "1-4=1:200,9=paper"    # whole-sheet scales
+uv run pdf2dwfx drawing.pdf --viewport "17:20,150,145,285=1:5"  # area in mm from the top-left corner
+uv run pdf2dwfx drawing.pdf --no-suggest                   # no guessing: paper millimetres
 ```
 
 ### License

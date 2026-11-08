@@ -87,6 +87,23 @@ class Prim:
     layer: str | None = None
     image: PlacedImage | None = None
     text: PreparedText | None = None
+    box: Box | None = None  # text only: the area it covers
+    viewport: int | None = None  # index into Prepared.viewports, None = outside all
+
+
+@dataclass
+class PreparedViewport:
+    """A sheet area with its own scale (see scale.py), in grid units.
+
+    ``clip`` is ``box`` grown to cover all its shapes completely: the
+    viewport's outline is also a clipping edge in the viewer, and a drawing
+    that pokes out of the box a little must not be cut.
+    """
+
+    box: Box
+    clip: Box
+    scale: float
+    label: str = ""
 
 
 @dataclass
@@ -95,6 +112,8 @@ class Prepared:
     height_units: int
     prims: list[Prim] = field(default_factory=list)
     fonts: dict = field(default_factory=dict)  # key -> model.FontData, fonts used by text
+    scale: float | None = None  # whole-sheet scale; None = paper (mm)
+    viewports: list[PreparedViewport] = field(default_factory=list)
 
 
 # --- Geometry helpers ------------------------------------------------------------
@@ -491,7 +510,7 @@ class _Preparer:
             shape.text, shape.font, (round(ox), round(oy)), (a, b, c, d), shape.glyphs, [v * k for v in shape.advances]
         )
         style = Style(fill=_with_opacity(shape.fill, opacity))
-        self.out.prims.append(Prim("text", [], [], style, shape.layer, text=text))
+        self.out.prims.append(Prim("text", [], [], style, shape.layer, text=text, box=box))
 
     def shape(self, shape: PathShape, region: _ClipRegion | None, opacity: float, dx: float, dy: float) -> None:
         contours, closed = to_contours(shape.ops, dx, dy)
@@ -618,7 +637,51 @@ def place_image(
     return _redraw(img, m, region if relation == "cut" else None, opacity)
 
 
+def prim_box(prim: Prim) -> Box:
+    if prim.box is not None:
+        return prim.box
+    return _bbox(prim.contours)
+
+
+def _assign_viewports(out: Prepared, sheet: Sheet) -> None:
+    """Put each shape in the viewport its middle lies in.
+
+    Where viewports overlap, the smallest one wins (a detail drawn inside a
+    larger plan's area belongs to the detail).
+    """
+    scale = sheet.scale
+    if scale is None:
+        return
+    out.scale = scale.scale
+    k = UNITS_PER_PT
+    found = []
+    for vp in scale.viewports:
+        x0, y0, x1, y1 = vp.box
+        box = (round(min(x0, x1) * k), round(min(y0, y1) * k), round(max(x0, x1) * k), round(max(y0, y1) * k))
+        if box[2] > box[0] and box[3] > box[1] and vp.scale > 0:
+            found.append(PreparedViewport(box, box, vp.scale, vp.label))
+    if not found:
+        return
+    by_size = sorted(range(len(found)), key=lambda i: (found[i].box[2] - found[i].box[0]) * (found[i].box[3] - found[i].box[1]))
+    clips = [list(v.box) for v in found]
+    for prim in out.prims:
+        bx0, by0, bx1, by1 = prim_box(prim)
+        mx, my = (bx0 + bx1) / 2, (by0 + by1) / 2
+        for i in by_size:
+            x0, y0, x1, y1 = found[i].box
+            if x0 <= mx <= x1 and y0 <= my <= y1:
+                prim.viewport = i
+                c = clips[i]
+                c[0], c[1], c[2], c[3] = min(c[0], bx0), min(c[1], by0), max(c[2], bx1), max(c[3], by1)
+                break
+    for vp, c in zip(found, clips):
+        # one unit of room so lines exactly on the edge are not cut
+        vp.clip = (c[0] - 1, c[1] - 1, c[2] + 1, c[3] + 1)
+    out.viewports = found
+
+
 def prepare(sheet: Sheet) -> Prepared:
     p = _Preparer(sheet)
     p.walk(sheet.root.children, None, 1.0, 0.0, 0.0)
+    _assign_viewports(p.out, sheet)
     return p.out

@@ -7,8 +7,12 @@ number (``refName`` = name prefix + shape number, see xps.py).
 
 Every rule below was verified by opening test files in Design Review:
 
-* ``Units`` and ``View``: how grid units relate to real-world units
-  (milestone 4 will set the drawing scale here) and the sheet area.
+* ``Units`` and ``View``: how real-world units relate to grid units
+  (the sheet's drawing scale, or paper millimetres) and the sheet area.
+* ``Viewport`` (inside ``RenditionSync``) for each viewport canvas: its
+  own drawing scale, as a transform from metres to grid units. This is
+  how AutoCAD stores several scales on one sheet (checked in AutoCAD's
+  own DWF files and in the DWF Toolkit source).
 * ``Polygon`` for every filled shape. Without it the translator fills the
   outline as a strip of triangles, which is only right for convex shapes:
   an L-shaped fill came out with a corner cut off.
@@ -33,7 +37,7 @@ from xml.sax.saxutils import quoteattr
 
 from .pdf_reader import fmt
 from .prepare import UNITS_PER_MM, Prepared
-from .xps import NAME_PREFIX, shape_name
+from .xps import CLOSE, NAME_PREFIX, OPEN, layout, shape_name
 
 # Layer for everything outside any PDF layer (and for PDFs without layers):
 # "0" is the usual name of the default layer in CAD programs.
@@ -72,6 +76,21 @@ def _font_setting(prim, prepared: Prepared, font_uris: dict[str, str]) -> str:
     )
 
 
+def units_transform(scale: float | None, x0: float = 0, y0: float = 0) -> str:
+    """W2X transform from real-world units to grid units, as 16 numbers.
+
+    With a scale: metres; 1 m is 1000 mm / scale on paper. Without: paper
+    millimetres. The real-world origin goes to grid point (x0, y0). Only
+    the scale matters for distances, so this holds for any paper size.
+    """
+    if scale:
+        per_unit = UNITS_PER_MM * 1000 / scale  # grid units per metre
+    else:
+        per_unit = UNITS_PER_MM  # grid units per millimetre
+    s = fmt(per_unit, 9)
+    return f"{s},0,0,0,0,{s},0,0,0,0,1,0,{fmt(x0, 3)},{fmt(y0, 3)},0,1"
+
+
 def w2x(
     prepared: Prepared,
     sources: dict[str, str] | None = None,
@@ -79,11 +98,14 @@ def w2x(
 ) -> bytes:
     """``sources`` maps picture keys and ``font_uris`` font keys to their
     location relative to the page ("./name.png")."""
-    mm_per_unit = fmt(1 / UNITS_PER_MM, 12)
+    h = prepared.height_units
+    if prepared.scale:
+        page_units = f'Label="m" Transform="{units_transform(prepared.scale)}"'
+    else:
+        page_units = f'Label="mm" Transform="{units_transform(None)}"'
     out = [
         f'<W2X VersionMajor="7" VersionMinor="0" NamePrefix="{NAME_PREFIX}">',
-        f'<Units refName="{shape_name(0)}" '
-        f'Transform="{mm_per_unit},0,0,0,0,{mm_per_unit},0,0,0,0,1,0,0,0,0,1"/>',
+        f'<Units refName="{shape_name(0)}" {page_units}/>',
         f'<View refName="{shape_name(0)}" '
         f'Area="0,0,{prepared.width_units},{prepared.height_units}"/>',
     ]
@@ -91,10 +113,30 @@ def w2x(
     current_font: str | None = None
     current_layer: str | None = None
     layer_numbers: dict[str, int] = {}
-    for index, prim in enumerate(prepared.prims, start=1):
-        name = shape_name(index)
+    left_viewport = False
+    for what, name, index in layout(prepared):
+        if what == OPEN:
+            vp = prepared.viewports[index]
+            # Real-world origin at the viewport's lower-left corner (W2X y is up).
+            x0, _, _, y1 = vp.box
+            label = vp.label or f"Viewport {index + 1}"
+            out.append(
+                f'<RenditionSync refName="{name}"><Viewport Name={quoteattr(label)} Label="m" '
+                f'Transform="{units_transform(vp.scale, x0, h - y1)}"/></RenditionSync>'
+            )
+            continue
+        if what == CLOSE:
+            left_viewport = True
+            continue
+        prim = prepared.prims[index - 1]
         # Settings that change at this shape, written before it like AutoCAD.
         changes: list[str] = []
+        if left_viewport:
+            # Back outside all viewports: an outline-less viewport ends the
+            # last one (as the DWF Toolkit writes it), so the sheet scale
+            # applies again.
+            changes.append('<Viewport Name="" End="true"/>')
+            left_viewport = False
         layer = prim.layer or DEFAULT_LAYER
         if layer != current_layer:
             if layer in layer_numbers:

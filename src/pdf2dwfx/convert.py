@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 import pymupdf
 
 from .dwfx import write_dwfx
 from .pdf_reader import read_page
+from .scale import PageScale
 
 
 def parse_pages(spec: str, page_count: int) -> list[int]:
@@ -27,12 +28,20 @@ def parse_pages(spec: str, page_count: int) -> list[int]:
     return pages
 
 
-def convert(pdf_path: Path, dwfx_path: Path, pages: int | Sequence[int] | None = None) -> list[str]:
+def convert(
+    pdf_path: Path,
+    dwfx_path: Path,
+    pages: int | Sequence[int] | None = None,
+    scales: Mapping[int, PageScale] | Callable[[pymupdf.Page], PageScale | None] | None = None,
+) -> list[str]:
     """Convert PDF pages into one DWFx file with one sheet per page.
 
     ``pages``: page numbers counting from 1 (a single number, a list, or
-    None for all pages). Returns warnings: PDF features that could not be
-    reproduced, totalled over all converted pages.
+    None for all pages). ``scales``: the drawing scale of each page, by
+    page number, or a function that works it out from the page (see
+    suggest.py); pages without one measure as paper (mm). Returns
+    warnings: PDF features that could not be reproduced, totalled over all
+    converted pages.
     """
     with pymupdf.open(pdf_path) as doc:
         if pages is None:
@@ -44,7 +53,14 @@ def convert(pdf_path: Path, dwfx_path: Path, pages: int | Sequence[int] | None =
         for n in numbers:
             if not 1 <= n <= doc.page_count:
                 raise ValueError(f"page {n} does not exist (the PDF has {doc.page_count} pages)")
-        sheets = [read_page(doc[n - 1]) for n in numbers]
+        sheets = []
+        for n in numbers:
+            sheet = read_page(doc[n - 1])
+            if callable(scales):
+                sheet.scale = scales(doc[n - 1])
+            elif scales is not None:
+                sheet.scale = scales.get(n)
+            sheets.append(sheet)
     write_dwfx(dwfx_path, sheets)
     totals: Counter[str] = Counter()
     for sheet in sheets:

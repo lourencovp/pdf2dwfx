@@ -274,3 +274,191 @@ def text_pdf(path: Path) -> Path:
     doc.subset_fonts()  # after all text is written, so every letter is kept
     doc.save(path)
     return path
+
+
+# Paper sizes used to check that scales hold on every sheet size (mm).
+PAPER_SIZES = {
+    "A4 portrait": (210, 297),
+    "A3 landscape": (420, 297),
+    "A1 landscape": (841, 594),
+    "A0 portrait": (841, 1189),
+    "Letter": (215.9, 279.4),
+    "long custom": (2000, 300),
+}
+
+
+def scale_sheet_layout(paper_mm: tuple[float, float]) -> dict[str, tuple[float, float, float, float]]:
+    """Where things go on the scale test sheet, in mm from the top-left,
+    as fractions of the paper so it fits any size."""
+    w, h = paper_mm
+    return {
+        "plan": (0.08 * w, 0.10 * h, 0.45 * w, 0.55 * h),  # 1:50 drawing (clipped)
+        "plan_title": (0.08 * w, 0.58 * h, 0, 0),
+        "detail": (0.55 * w, 0.10 * h, 0.80 * w, 0.40 * h),  # 1:5 drawing (clipped)
+        "detail_title": (0.55 * w, 0.43 * h, 0, 0),
+        "untitled": (0.55 * w, 0.55 * h, 0.75 * w, 0.75 * h),  # no scale written
+        "keyword": (0.86 * w, 0.90 * h, 0, 0),  # "ESCALA:"
+        "title_scale": (0.86 * w, 0.92 * h, 0, 0),  # "1 : 50"
+        "sheet_number": (0.86 * w, 0.97 * h, 0, 0),  # "3 / 28": not a scale
+    }
+
+
+def scale_pdf(
+    path: Path,
+    paper_mm: tuple[float, float] = (420, 297),
+    rotate: int = 0,
+    crop_offset: bool = False,
+    title_block_scale: str = "1 : 50",
+    measure_data: bool = False,
+    clipped: bool = True,
+) -> Path:
+    """A sheet like an architect's layout: a 1:50 plan and a 1:5 detail,
+    each clipped to its viewport (as CAD programs export them) with its
+    title below it, an untitled detail, and a title block with
+    "ESCALA: 1 : 50" and a sheet number "3 / 28".
+
+    ``rotate``: the page is stored turned (PDF /Rotate) but drawn so the
+    user sees the same layout. ``crop_offset``: the visible page (crop
+    box) does not start at the PDF origin. ``measure_data``: also store the
+    viewports' scales as PDF measurement data (/VP, /Measure).
+    ``clipped=False``: no viewport clipping (some programs export so).
+    """
+    w_mm, h_mm = paper_mm
+    margin = 30 if crop_offset else 0  # extra paper around the crop box (mm)
+    doc = pymupdf.open()
+    # Draw on the page as the user will see it; for a rotated page, create
+    # it with swapped sides and rotate afterwards, mapping coordinates.
+    page = doc.new_page(width=(w_mm + 2 * margin) * MM, height=(h_mm + 2 * margin) * MM)
+    page.insert_font(fontname="F1", fontbuffer=pymupdf.Font("cjk").buffer)
+    layout = scale_sheet_layout(paper_mm)
+
+    def at(x: float, y: float) -> pymupdf.Point:
+        return pymupdf.Point((x + margin) * MM, (y + margin) * MM)
+
+    def rect(box) -> pymupdf.Rect:
+        return pymupdf.Rect(at(box[0], box[1]), at(box[2], box[3]))
+
+    text_size = max(min(w_mm, h_mm) / 40, 4.0)  # readable on any paper size
+    for name in ("plan", "detail", "untitled"):
+        box = rect(layout[name])
+        shape = page.new_shape()
+        # A small "drawing": outline, a diagonal and an inner grid of lines,
+        # clipped to the viewport box like CAD viewports.
+        shape.draw_rect(box)
+        shape.draw_line(box.tl, box.br)
+        for i in range(1, 6):
+            x = box.x0 + box.width * i / 6
+            shape.draw_line(pymupdf.Point(x, box.y0), pymupdf.Point(x, box.y1))
+        shape.finish(color=(0, 0, 0), width=0.3)
+        shape.commit()
+    page.insert_text(at(*layout["plan_title"][:2]), "PLANTA PISO 1 | 1:50", fontname="F1", fontsize=text_size)
+    page.insert_text(at(*layout["detail_title"][:2]), "DETALHE A 1:5", fontname="F1", fontsize=text_size)
+    page.insert_text(at(*layout["keyword"][:2]), "ESCALA:", fontname="F1", fontsize=text_size * 0.5)
+    page.insert_text(at(*layout["title_scale"][:2]), title_block_scale, fontname="F1", fontsize=text_size * 0.8)
+    page.insert_text(at(*layout["sheet_number"][:2]), "3 / 28", fontname="F1", fontsize=text_size)
+    # Clip each drawing to its viewport, as CAD exports do: wrap the
+    # drawing commands in "q <box> re W n ... Q". Simplest: draw again
+    # inside clips and leave the unclipped ones (same geometry).
+    page_h = page.rect.height
+    clips = b""
+    for name in ("plan", "detail", "untitled") if clipped else ():
+        r = rect(layout[name])
+        clips += b"q %.3f %.3f %.3f %.3f re W n 0.2 w 0 0 0 RG " % (r.x0, page_h - r.y1, r.width, r.height)
+        for i in range(12):
+            y = page_h - r.y1 + r.height * (i + 0.5) / 12
+            clips += b"%.3f %.3f m %.3f %.3f l S " % (r.x0 - 5, y, r.x1 + 5, y)
+        clips += b"Q "
+    _append(page, clips)
+    doc.subset_fonts()
+    doc.save(path)
+    doc.close()
+    doc = pymupdf.open(path)
+    page = doc[0]
+    # cm: from the drawing's PDF coordinates to how the page is stored.
+    cm = _rotate_content(doc, rotate) if rotate else (1, 0, 0, 1, 0, 0)
+
+    def stored(x: float, y: float) -> tuple[float, float]:
+        a, b, c, d, e, f = cm
+        return a * x + c * y + e, b * x + d * y + f
+
+    def stored_box(x0: float, y0: float, x1: float, y1: float) -> str:
+        (ax, ay), (bx, by) = stored(x0, y0), stored(x1, y1)
+        return f"{min(ax, bx):.3f} {min(ay, by):.3f} {max(ax, bx):.3f} {max(ay, by):.3f}"
+
+    if measure_data:
+        vps = []
+        for name, scale in (("plan", 50), ("detail", 5)):
+            r = rect(layout[name])
+            metres_per_pt = 0.0254 / 72 * scale
+            vps.append(
+                f"<< /Type /Viewport /Name ({name}) /BBox [{stored_box(r.x0, page_h - r.y1, r.x1, page_h - r.y0)}] "
+                f"/Measure << /Type /Measure /Subtype /RL /R (1 mm = {scale} mm) "
+                f"/X [<< /Type /NumberFormat /U (m) /C {metres_per_pt:.10f} /D 1000 >>] >> >>"
+            )
+        doc.xref_set_key(page.xref, "VP", "[" + " ".join(vps) + "]")
+    if crop_offset:
+        box = stored_box(margin * MM, margin * MM, (w_mm + margin) * MM, (h_mm + margin) * MM)
+        doc.xref_set_key(page.xref, "CropBox", f"[{box}]")
+    doc.save(path, incremental=True, encryption=0)
+    doc.close()
+    return path
+
+
+def _rotate_content(doc: pymupdf.Document, rotate: int) -> tuple:
+    """Turn page 1's stored content by -rotate and set /Rotate rotate, so the
+    page looks the same to the user but is stored rotated (as some CAD
+    programs and scanners write landscape sheets)."""
+    page = doc[0]
+    mb = page.mediabox
+    w, h = mb.width, mb.height
+    # Matrix taking the visible layout to the stored (unrotated) space.
+    if rotate == 90:
+        cm, new_box = (0, 1, -1, 0, h, 0), (0, 0, h, w)
+    elif rotate == 270:
+        cm, new_box = (0, -1, 1, 0, 0, w), (0, 0, h, w)
+    elif rotate == 180:
+        cm, new_box = (-1, 0, 0, -1, w, h), (0, 0, w, h)
+    else:
+        raise ValueError(rotate)
+    xrefs = page.get_contents()
+    content = b"".join(doc.xref_stream(x) for x in xrefs)
+    doc.update_stream(xrefs[0], b"q %g %g %g %g %g %g cm\n" % cm + content + b"\nQ")
+    for x in xrefs[1:]:
+        doc.update_stream(x, b"")
+    doc.xref_set_key(page.xref, "MediaBox", "[%g %g %g %g]" % new_box)
+    doc.xref_set_key(page.xref, "Rotate", str(rotate))
+    return cm
+
+
+def fonts_pdf(path: Path) -> Path:
+    """Text in fonts a DWFx cannot embed (only TrueType can be): the
+    standard PDF font Helvetica (not embedded at all), an embedded Type 1
+    (CFF) font, and a Type 3 font (letters drawn as little pictures), in
+    several sizes, colours and a rotation, plus one TrueType line."""
+    doc = pymupdf.open()
+    page = doc.new_page(width=420 * MM, height=297 * MM)
+    page.insert_text((60, 100), "Helvetica not embedded 1:100", fontname="helv", fontsize=24)
+    page.insert_text((60, 160), "Rotated Helvetica", fontname="helv", fontsize=18, rotate=90, color=(0.8, 0, 0))
+    page.insert_font(fontname="T1", fontbuffer=pymupdf.Font("Times-Roman").buffer)
+    page.insert_text((60, 220), "Embedded Type 1 (CFF) font", fontname="T1", fontsize=30, color=(0, 0, 0.7))
+    page.insert_font(fontname="TT", fontbuffer=pymupdf.Font("cjk").buffer)
+    page.insert_text((60, 300), "TrueType stays real text", fontname="TT", fontsize=20)
+    # Type 3 font: glyph "A" is a filled square, "B" a triangle.
+    procs_a = doc.get_new_xref()
+    doc.update_object(procs_a, "<<>>")
+    doc.update_stream(procs_a, b"1000 0 0 0 800 800 d1 0 0 800 800 re f")
+    procs_b = doc.get_new_xref()
+    doc.update_object(procs_b, "<<>>")
+    doc.update_stream(procs_b, b"1000 0 0 0 800 800 d1 0 0 m 800 0 l 400 800 l f")
+    font = doc.get_new_xref()
+    doc.update_object(
+        font,
+        "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 800 800] /FontMatrix [0.001 0 0 0.001 0 0] "
+        f"/CharProcs << /A {procs_a} 0 R /B {procs_b} 0 R >> "
+        "/Encoding << /Type /Encoding /Differences [65 /A /B] >> /FirstChar 65 /LastChar 66 "
+        "/Widths [1000 1000] /ToUnicode null >>",
+    )
+    _add_resource(page, "Font", "F3", font)
+    _append(page, b"BT /F3 40 Tf 0 0.5 0 rg 60 %.2f Td (ABAB) Tj ET" % (297 * MM - 420))
+    doc.save(path)
+    return path
