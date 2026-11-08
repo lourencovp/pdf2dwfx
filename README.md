@@ -1,41 +1,6 @@
 # pdf2dwfx
 
-*[Português](#português) · [English](#english)*
-
----
-
-## Português
-
-**pdf2dwfx** converte desenhos vetoriais em PDF (exportados de software CAD) em ficheiros **DWFx**, prontos para submeter projetos de arquitetura às câmaras municipais portuguesas.
-
-> ⚠️ **Primeira versão (0.1).** Funciona, mas ainda está a ser melhorada. Verifique sempre o resultado no Autodesk Design Review antes de submeter.
-
-### Descarregar e primeira utilização
-
-Descarregue a versão mais recente na página [Releases](https://github.com/lourencovp/pdf2dwfx/releases/latest):
-
-- **Windows:** `pdf2dwfx-windows.exe`. Não precisa de instalação: faça duplo clique. Na primeira vez o Windows pode mostrar "O Windows protegeu o seu PC"; clique em **Mais informações → Executar mesmo assim**.
-- **macOS** (Macs com Apple silicon, M1 ou mais recente): `pdf2dwfx-macos.dmg`. Abra-o e arraste o pdf2dwfx para Aplicações. Na primeira vez, clique com o botão direito na aplicação, escolha **Abrir** e confirme (ou permita-a em Definições do Sistema → Privacidade e Segurança).
-- **Linux:** `pdf2dwfx-linux.AppImage`. Torne-o executável (`chmod +x pdf2dwfx-linux.AppImage`) e faça duplo clique.
-
-Estes avisos aparecem porque a aplicação ainda não tem assinatura digital (prevista para uma versão futura). Para confirmar que o ficheiro é o original, compare a sua impressão digital SHA-256 com `SHA256SUMS.txt` na mesma página.
-
-**Como usar:** abra o PDF, verifique a escala de cada página (amarelo = sugerida, roxo = sem escala, verde = confirmada por si; ⚠️ = várias escalas na página), faça duplo clique numa página para definir viewports com escala própria, e clique em **Converter para DWFx**.
-
-### Objetivos
-
-- Cada página do PDF torna-se uma folha DWFx com exatamente o mesmo tamanho de papel.
-- As camadas do PDF tornam-se camadas DWFx que se podem ligar/desligar no Autodesk Design Review.
-- Escala em metros, para que a ferramenta de medição do Design Review dê distâncias reais corretas.
-- Tramas, preenchimentos e texto preservados, com coordenadas tão precisas como no PDF.
-
-### Privacidade
-
-A aplicação funciona **totalmente offline**: nunca se liga à internet, não envia telemetria nem relatórios automáticos. Os seus desenhos nunca saem do seu computador. Se a aplicação falhar, guarda um relatório no seu computador (sem conteúdo dos desenhos nem nomes de ficheiros) e é você quem decide se o partilha no GitHub.
-
-### Licença
-
-[GNU AGPL-3.0](LICENSE).
+*[English](#english) · [Português](#português)*
 
 ---
 
@@ -95,5 +60,40 @@ uv run pdf2dwfx drawing.pdf --no-suggest                   # no guessing: paper 
 ```
 
 ### License
+
+[GNU AGPL-3.0](LICENSE).
+
+---
+
+## Português
+
+**pdf2dwfx** converte desenhos vetoriais em PDF (exportados de software CAD) em ficheiros **DWFx**, prontos para submeter projetos de arquitetura às câmaras municipais portuguesas.
+
+> ⚠️ **Primeira versão (0.1).** Funciona, mas ainda está a ser melhorada. Verifique sempre o resultado no Autodesk Design Review antes de submeter.
+
+### Descarregar e primeira utilização
+
+Descarregue a versão mais recente na página [Releases](https://github.com/lourencovp/pdf2dwfx/releases/latest):
+
+- **Windows:** `pdf2dwfx-windows.exe`. Não precisa de instalação: faça duplo clique. Na primeira vez o Windows pode mostrar "O Windows protegeu o seu PC"; clique em **Mais informações → Executar mesmo assim**.
+- **macOS** (Macs com Apple silicon, M1 ou mais recente): `pdf2dwfx-macos.dmg`. Abra-o e arraste o pdf2dwfx para Aplicações. Na primeira vez, clique com o botão direito na aplicação, escolha **Abrir** e confirme (ou permita-a em Definições do Sistema → Privacidade e Segurança).
+- **Linux:** `pdf2dwfx-linux.AppImage`. Torne-o executável (`chmod +x pdf2dwfx-linux.AppImage`) e faça duplo clique.
+
+Estes avisos aparecem porque a aplicação ainda não tem assinatura digital (prevista para uma versão futura). Para confirmar que o ficheiro é o original, compare a sua impressão digital SHA-256 com `SHA256SUMS.txt` na mesma página.
+
+**Como usar:** abra o PDF, verifique a escala de cada página (amarelo = sugerida, roxo = sem escala, verde = confirmada por si; ⚠️ = várias escalas na página), faça duplo clique numa página para definir viewports com escala própria, e clique em **Converter para DWFx**.
+
+### Objetivos
+
+- Cada página do PDF torna-se uma folha DWFx com exatamente o mesmo tamanho de papel.
+- As camadas do PDF tornam-se camadas DWFx que se podem ligar/desligar no Autodesk Design Review.
+- Escala em metros, para que a ferramenta de medição do Design Review dê distâncias reais corretas.
+- Tramas, preenchimentos e texto preservados, com coordenadas tão precisas como no PDF.
+
+### Privacidade
+
+A aplicação funciona **totalmente offline**: nunca se liga à internet, não envia telemetria nem relatórios automáticos. Os seus desenhos nunca saem do seu computador. Se a aplicação falhar, guarda um relatório no seu computador (sem conteúdo dos desenhos nem nomes de ficheiros) e é você quem decide se o partilha no GitHub.
+
+### Licença
 
 [GNU AGPL-3.0](LICENSE).
