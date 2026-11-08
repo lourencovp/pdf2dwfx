@@ -204,7 +204,7 @@ def fixed_page(
 
     ``dictionary_source``: location of the picture brush list, if any.
     """
-    k = fmt(UNITS_TO_XPS, 12)
+    k = fmt(UNITS_TO_XPS, 15)
     w = fmt(prepared.width_units * UNITS_TO_XPS, 6)
     h = fmt(prepared.height_units * UNITS_TO_XPS, 6)
     out: list[str] = [

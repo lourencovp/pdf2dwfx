@@ -9,6 +9,7 @@ import pymupdf
 import pytest
 
 from pdf2dwfx.convert import convert
+from pdf2dwfx.prepare import UNITS_PER_MM
 from pdf2dwfx.fonts import obfuscate, windows_font
 from synthetic import text_pdf
 
@@ -99,7 +100,7 @@ def test_rotated_text_gets_rotation(tmp_path: Path) -> None:
 def test_text_size_matches_pdf(tmp_path: Path) -> None:
     _, _, _, _, page, w2x = _convert(tmp_path)
     title = [g for g in page.iter(NS_XPS + "Glyphs") if g.get("UnicodeString").startswith("PLANTA")][0]
-    expected = 14 * 1000 * 25.4 / 72  # 14 pt in micrometres
+    expected = 14 * UNITS_PER_MM * 25.4 / 72  # 14 pt in grid units
     assert math.isclose(float(title.get("FontRenderingEmSize")), expected, rel_tol=0.01)
     heights = {int(f.get("Height")) for f in w2x.iter("Font")}
     assert round(expected) in heights

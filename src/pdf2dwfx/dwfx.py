@@ -96,13 +96,13 @@ def _rels_path(part: str) -> str:
 def _matrix_4x4() -> str:
     """Drawing-to-paper transform for the DWF sheet description.
 
-    Drawing units are the prepared grid (micrometres); the paper is
+    Drawing units are the prepared grid (see prepare.UNITS_PER_MM); the paper is
     described in millimetres. DWF writes 2D transforms as a 4x4 matrix in
     row-vector order. Autodesk derives the page placement from this, so it
     must agree with the canvas transform in the FixedPage."""
     k = 1 / UNITS_PER_MM
     values = (k, 0, 0, 0, 0, k, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)
-    return " ".join(fmt(v, 12) for v in values)
+    return " ".join(fmt(v, 15) for v in values)
 
 
 @dataclass

@@ -10,6 +10,7 @@ import pymupdf
 import pytest
 
 from pdf2dwfx.convert import convert
+from pdf2dwfx.prepare import UNITS_PER_MM
 from pdf2dwfx.scale import CONFIRMED, NO_SCALE, SUGGESTED, PageScale, Viewport, parse_scale
 from pdf2dwfx.suggest import scale_labels, suggest
 from pdf2dwfx.w2x import units_transform
@@ -35,10 +36,10 @@ def test_parse_scale_rejects_nonsense() -> None:
 
 
 def test_units_do_not_depend_on_paper() -> None:
-    """1 m at 1:100 is 10 mm of paper = 10 000 grid units (1 unit = 1 um)."""
-    assert units_transform(100).startswith("10000,0,0,0,0,10000,")
-    assert units_transform(5).startswith("200000,0,0,0,0,200000,")
-    assert units_transform(None).startswith("1000,0,0,0,0,1000,")  # paper mm
+    """1 m at 1:100 is 10 mm of paper; at 1:5, 200 mm; paper is measured in mm."""
+    for scale, mm in ((100, 10), (5, 200), (None, 1)):
+        per_unit = float(units_transform(scale).split(",")[0])
+        assert per_unit == mm * UNITS_PER_MM
 
 
 def _inside(box, outer, tol=0.5) -> bool:
@@ -178,7 +179,7 @@ def test_measured_sizes_are_true(tmp_path: Path, name: str, paper, rotate: int, 
     assert canvases
     outside = [el for el in content if el.tag == NS + "Path"]
     plan_mm = layout["plan"][2] - layout["plan"][0]
-    plan_paths = [el for el in outside if _paths_box([el])[0] < (layout["plan"][2] - 1) * 1000]
+    plan_paths = [el for el in outside if _paths_box([el])[0] < (layout["plan"][2] - 1) * UNITS_PER_MM]
     x0, _, x1, _ = _paths_box(plan_paths)
     assert abs((x1 - x0) / sheet_per_metre - plan_mm * 50 / 1000) < 0.001  # metres
     # Viewport scale 1:5 for the detail.
@@ -197,7 +198,7 @@ def test_confirmed_scale_overrides(tmp_path: Path) -> None:
     out = tmp_path / "t.dwfx"
     convert(pdf, out, scales={1: PageScale(scale=20, status=CONFIRMED, source="user")})
     w2x, page = _w2x_and_page(out)
-    assert _per_unit(w2x.find("Units").get("Transform")) == 50000  # 1 m = 50 mm at 1:20
+    assert _per_unit(w2x.find("Units").get("Transform")) == 50 * UNITS_PER_MM  # 1 m = 50 mm at 1:20
 
 
 def test_without_scale_the_sheet_measures_paper_mm(tmp_path: Path) -> None:
@@ -206,7 +207,7 @@ def test_without_scale_the_sheet_measures_paper_mm(tmp_path: Path) -> None:
     convert(pdf, out)
     w2x, _ = _w2x_and_page(out)
     units = w2x.find("Units")
-    assert units.get("Label") == "mm" and _per_unit(units.get("Transform")) == 1000
+    assert units.get("Label") == "mm" and _per_unit(units.get("Transform")) == UNITS_PER_MM
 
 
 def test_drawing_order_kept_across_viewports(tmp_path: Path) -> None:
@@ -271,7 +272,7 @@ def test_imperial_sheet(tmp_path: Path, paper) -> None:
     w2x, _ = _w2x_and_page(out)
     # 1 m at 1:96 = 1000/96 mm of paper; 1 ft (0.3048 m) = 1/8 inch exactly.
     per_metre = _per_unit(w2x.find("Units").get("Transform"))
-    assert abs(0.3048 * per_metre - 3175) < 0.01  # 1/8 inch = 3.175 mm = 3175 grid units
+    assert abs(0.3048 * per_metre - 3.175 * UNITS_PER_MM) < 0.01  # 1/8 inch = 3.175 mm
 
 
 def test_several_scales_warning(tmp_path: Path) -> None:

@@ -29,15 +29,18 @@ from pymupdf import mupdf
 
 from .model import Group, ImageData, ImageShape, Matrix, PathOps, PathShape, Sheet, Style, TextShape
 
-# The whole-number grid: 1 unit = 1 micrometre (0.001 mm). Far finer than
-# any printer or screen, and an A0 sheet (1189 mm) is only ~1.2 million
-# units, well inside the format's limit of about 2 billion.
-UNITS_PER_MM = 1000
+# The whole-number grid (Design Review only takes whole numbers): 1 unit =
+# 0.0001 mm. These are precision drawings, so coordinates are kept as the
+# PDF has them: CAD programs write at most 3 decimals of a point (steps of
+# 0.00035 mm), and this grid is finer than that. An A0 sheet (1189 mm) is
+# ~12 million units, a 5 m long sheet 50 million: well inside the format's
+# limit of about 2 billion.
+UNITS_PER_MM = 10_000
 UNITS_PER_PT = UNITS_PER_MM * 25.4 / 72
 
-# Curves become straight segments that never stray more than this from the
-# true curve (in grid units, i.e. micrometres).
-CURVE_TOLERANCE = 2.0
+# Curves become straight segments (Design Review draws no curves) that
+# never stray more than 0.001 mm from the true curve.
+CURVE_TOLERANCE = 0.001 * UNITS_PER_MM
 
 # Pictures that must be redrawn (rotated, clipped...) are limited to this
 # many pixels, and Autodesk's format allows at most 65535 per side.

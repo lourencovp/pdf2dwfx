@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from pdf2dwfx.cli import main
+from pdf2dwfx.prepare import UNITS_PER_MM
 from synthetic import drawing_pdf
 
 
@@ -28,13 +29,14 @@ def test_network_is_blocked_during_tests() -> None:
         socket.create_connection(("example.com", 80))
 
 
-def _units(dwfx: Path) -> list[str]:
+def _units(dwfx: Path) -> list[float]:
+    """Grid units per metre (or per mm on paper) of the sheet and its viewports."""
     import re
     import zipfile
 
     z = zipfile.ZipFile(dwfx)
     w2x = z.read(next(n for n in z.namelist() if n.endswith("W2X.xml"))).decode()
-    return re.findall(r'<(?:Units|Viewport) [^>]*Transform="([\d.]+),', w2x)
+    return [float(v) for v in re.findall(r'<(?:Units|Viewport) [^>]*Transform="([\d.]+),', w2x)]
 
 
 def test_show_scales_lists_suggestions(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -53,7 +55,7 @@ def test_scale_set_by_user(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -
     pdf = scale_pdf(tmp_path / "s.pdf")
     assert main([str(pdf), "--scale", "1=1:20"]) == 0
     assert "set by you" in capsys.readouterr().out
-    assert _units(tmp_path / "s.dwfx") == ["50000"]  # sheet 1:20, suggested viewport dropped
+    assert _units(tmp_path / "s.dwfx") == [UNITS_PER_MM * 50]  # 1 m = 50 mm at 1:20; viewport dropped
 
 
 def test_viewport_set_by_user(tmp_path: Path) -> None:
@@ -62,7 +64,7 @@ def test_viewport_set_by_user(tmp_path: Path) -> None:
     pdf = scale_pdf(tmp_path / "s.pdf")
     assert main([str(pdf), "--scale", "1=1:100", "--viewport", "1:225,25,340,125=1:10"]) == 0
     units = _units(tmp_path / "s.dwfx")
-    assert units[0] == "10000" and set(units[1:]) == {"100000"}
+    assert units[0] == UNITS_PER_MM * 10 and set(units[1:]) == {UNITS_PER_MM * 100}
 
 
 def test_no_suggest_measures_paper(tmp_path: Path) -> None:
@@ -70,7 +72,7 @@ def test_no_suggest_measures_paper(tmp_path: Path) -> None:
 
     pdf = scale_pdf(tmp_path / "s.pdf")
     assert main([str(pdf), "--no-suggest"]) == 0
-    assert _units(tmp_path / "s.dwfx") == ["1000"]
+    assert _units(tmp_path / "s.dwfx") == [UNITS_PER_MM]  # paper mm
 
 
 @pytest.mark.parametrize("args", [["--scale", "1:100"], ["--viewport", "1:2,3=1:5"], ["--viewport", "9:1,2,3,4=1:5"]])
@@ -94,4 +96,4 @@ def test_imperial_scale_typed_by_user(tmp_path: Path) -> None:
 
     pdf = scale_pdf(tmp_path / "s.pdf")
     assert main([str(pdf), "--scale", "1=1/4\" = 1'-0\""]) == 0
-    assert abs(float(_units(tmp_path / "s.dwfx")[0]) - 1_000_000 / 48) < 0.001  # 1:48
+    assert abs(_units(tmp_path / "s.dwfx")[0] - UNITS_PER_MM * 1000 / 48) < 0.001  # 1:48
