@@ -16,7 +16,7 @@ Converts vector PDF drawings (exported from CAD software) into **DWFx** files su
 - **Units and scale:** real-world units are always **metres**. Viewports must carry their scale so the Design Review measure tool reports correct real-world distances. Read scale from PDF measurement viewport data (/VP, /Measure) when present; otherwise the user provides the scale (e.g. 1:100), possibly several per sheet (e.g. plan 1:100, details 1:20).
 - **Hatches and fills:** preserved visually as geometry (solid fills, pattern fills, line hatches). DWF has no editable hatch entity, so faithful geometry is the goal.
 - **Text:** preserved and readable.
-- **File size:** target at most 500 KB per sheet and 30 MB per file (Portuguese municipal limits, e.g. Maia). Avoid embedding raster images where vector is possible.
+- **Precision before file size:** keep coordinates as precise as the PDF stores them and pictures at the resolution received; never round or downsample to save space. Meeting municipal size limits (e.g. 500 KB per sheet, 30 MB per file in Maia) is the job of the CAD software that made the PDF. Lossless size savings are fine if they look identical in Design Review. An optional size-reduction setting (lower picture resolution and precision) may come after milestone 6.
 - **Digital signing:** required by several municipalities but **out of scope** until a later milestone.
 
 ## Core principles (non-negotiable)
@@ -52,10 +52,10 @@ Converts vector PDF drawings (exported from CAD software) into **DWFx** files su
 2. Layers from PDF OCGs, toggleable in Design Review.
 3. Multiple pages → multiple sheets in one DWFx; readable text.
 4. Scale: viewports in metres so measuring in Design Review is correct (from PDF data or user input).
-5. File size optimisation to meet municipal limits.
+5. File size: done as lossless savings only (shorter path data, joined strokes); no size targets (see "Precision before file size").
 6. Simple GUI (PySide6): choose PDF, set scales, convert.
 7. Crash reporter as described above.
-8. Packaging and releases via GitHub Actions (.exe, .dmg, AppImage, checksums, no-network test).
+8. Packaging and releases via GitHub Actions (.exe, .dmg, AppImage, checksums, no-network test). Optional size-reduction setting can be added after milestone 6.
 9. Later: digital signing of DWFx.
 
 ## Working rules
