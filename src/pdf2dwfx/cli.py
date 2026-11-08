@@ -15,7 +15,7 @@ import pymupdf
 
 from . import __version__
 from .convert import convert, parse_pages
-from .scale import CONFIRMED, SUGGESTED, PageScale, Viewport, parse_scale
+from .scale import CONFIRMED, SUGGESTED, PageScale, Viewport, format_scale, parse_scale
 from .suggest import PT_PER_MM, scale_plan
 
 _STATUS = {CONFIRMED: "set by you", SUGGESTED: "suggested", "none": "no scale found"}
@@ -51,7 +51,7 @@ def parse_viewport(spec: str, page_count: int) -> tuple[int, Viewport]:
     if scale is None:
         raise ValueError(f'"{spec}": a viewport needs a scale')
     x0, y0, x1, y1 = (float(v) * PT_PER_MM for v in numbers)
-    return n, Viewport((x0, y0, x1, y1), scale, f"Viewport 1:{value.strip().split(':')[-1]}")
+    return n, Viewport((x0, y0, x1, y1), scale, f"Viewport 1:{format_scale(scale)}")
 
 
 def _warning_sign() -> str:

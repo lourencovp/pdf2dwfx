@@ -27,7 +27,9 @@ from dataclasses import dataclass
 import pymupdf
 from pymupdf import mupdf
 
-from .scale import CONFIRMED, IMPERIAL, NO_SCALE, SUGGESTED, PageScale, Viewport, format_scale, imperial_scale
+from .scale import (
+    CONFIRMED, IMPERIAL, NO_SCALE, SUGGESTED, PageScale, Viewport, format_scale, imperial_scale,
+)
 
 PT_PER_MM = 72 / 25.4
 METRES_PER_PT = 0.0254 / 72
@@ -35,7 +37,6 @@ METRES_PER_PT = 0.0254 / 72
 # Words that announce a scale in a title block (Portuguese, English,
 # Spanish, French, Italian, German).
 _KEYWORD = re.compile(r"(?i)(?<![a-z])(esc(?:ala)?s?|scale|[ée]chelle|scala|ma(?:ss|ß)stab)(?![a-z])")
-# "1:100", "1 : 100", "1/50", "2:1", "1:2,5" ...
 # "1:100", "1 : 50", "1/50", "1_50", "1-50", "1 to 50", "2:1", "1:2,5" ...
 # Not part of a longer chain of numbers ("1-12-2024", "PR_1_50.dwg").
 _RATIO = re.compile(
@@ -74,6 +75,18 @@ def nice_scale(value: float) -> float:
     if nearest and abs(value - nearest) / value < 0.002:
         return float(nearest)
     return round(value, 4)
+
+
+def _turned(page: pymupdf.Page, box) -> tuple[float, float, float, float]:
+    """A box from PyMuPDF's text and shape lists -> on the sheet.
+
+    Those lists give positions on the *unrotated* page; turn them like the
+    page so they match the sheet as the user sees it.
+    """
+    r = pymupdf.Rect(box) * page.rotation_matrix
+    r.normalize()
+    o = page.rect
+    return (r.x0 - o.x0, r.y0 - o.y0, r.x1 - o.x0, r.y1 - o.y0)
 
 
 # --- 1. Scale data stored in the PDF -------------------------------------------
@@ -143,63 +156,53 @@ def pdf_viewports(page: pymupdf.Page) -> list[Viewport]:
 # --- 2. Scale texts on the page -------------------------------------------------
 
 
-def _ratio_scale(match: re.Match[str], announced: bool) -> float | None:
-    a, sep, b = float(match.group(1).replace(",", ".")), match.group(2), float(match.group(3).replace(",", "."))
-    if a <= 0 or b <= 0 or (a != 1 and b != 1):
-        return None  # "21 / 28" (sheet 21 of 28), "12:30" ...
-    scale = b / a
-    if announced:
-        return scale
-    # Without a word like ESCALA, only usual scales: "1:7" is rarely one.
-    # "1/2" is more often a fraction, and "1-2" or "1_2" a range or a
-    # number, so "/" needs the word, and "-", "_", "to" a scale of 1:5 or less.
+def _written_scales(text: str) -> list[tuple[int, float, str]]:
+    """Everything in a line of text that looks like a scale:
+    (position, the number after "1:", separator). Imperial scales such as
+    1/4" = 1'-0" have separator "="; their "1/4" is not also a 1:4 scale."""
+    imperial = list(IMPERIAL.finditer(text))
+    found = [(m.start(), imperial_scale(m), "=") for m in imperial]
+    for m in _RATIO.finditer(text):
+        if any(i.start() <= m.start() < i.end() for i in imperial):
+            continue
+        a, b = (float(g.replace(",", ".")) for g in (m.group(1), m.group(3)))
+        # One side must be 1: not "21 / 28" (sheet 21 of 28) or "12:30".
+        if a > 0 and b > 0 and (a == 1 or b == 1):
+            found.append((m.start(), b / a, m.group(2).lower()))
+    return [(start, scale, sep) for start, scale, sep in found if scale]
+
+
+def _believable(scale: float, sep: str, announced: bool) -> bool:
+    """Is this really a scale? Next to a word like ESCALA, or written the
+    imperial way, always. Otherwise only usual scales ("1:7" rarely is
+    one); "1/2" is more often a fraction and "1-2" or "1_2" a range or a
+    number, so "/" needs the word, and "-", "_", "to" a scale of 1:5 or less."""
+    if announced or sep == "=":
+        return True
     if scale not in _USUAL:
-        return None
-    if sep == ":":
-        return scale
-    if sep != "/" and scale >= 5:
-        return scale
-    return None
+        return False
+    return sep == ":" or (sep != "/" and scale >= 5)
 
 
 def scale_labels(page: pymupdf.Page) -> list[ScaleLabel]:
     """All scales written on the page, without duplicates and tiny print."""
-    origin = page.rect
-    # PyMuPDF gives text positions on the *unrotated* page: turn them like
-    # the page so they match the sheet as the user sees it.
-    turn = page.rotation_matrix
     lines = []
     for block in page.get_text("dict")["blocks"]:
         for line in block.get("lines", []):
-            if not line["spans"]:
-                continue
-            text = "".join(s["text"] for s in line["spans"])
-            r = pymupdf.Rect(line["bbox"]) * turn
-            r.normalize()
-            box = (r.x0 - origin.x0, r.y0 - origin.y0, r.x1 - origin.x0, r.y1 - origin.y0)
-            lines.append((text, box, max(s["size"] for s in line["spans"])))
+            if line["spans"]:
+                text = "".join(s["text"] for s in line["spans"])
+                size = max(s["size"] for s in line["spans"])
+                lines.append((text, _turned(page, line["bbox"]), size))
     # Lines that are only an announcing word, e.g. "ESCALA:" in a title
     # block cell, with the value in the line below or beside it.
-    keyword_lines = [
-        box for text, box, _ in lines
-        if _KEYWORD.search(text) and not _RATIO.search(text) and not IMPERIAL.search(text)
-    ]
+    keyword_lines = [box for text, box, _ in lines if _KEYWORD.search(text) and not _written_scales(text)]
     found: dict[tuple, ScaleLabel] = {}
     for text, box, size in lines:
-        # Imperial scales (1/4" = 1'-0") first; their "1/4" is not a 1:4 scale.
-        imperial = list(IMPERIAL.finditer(text))
-        candidates = [(m.start(), imperial_scale(m)) for m in imperial]
-        for match in _RATIO.finditer(text):
-            if any(m.start() <= match.start() < m.end() for m in imperial):
-                continue
-            candidates.append((match.start(), match))  # type: ignore[arg-type]
-        for start, value in candidates:
+        for start, scale, sep in _written_scales(text):
             announced = bool(_KEYWORD.search(text[:start])) or any(_near_keyword(box, k) for k in keyword_lines)
-            scale = value if not isinstance(value, re.Match) else _ratio_scale(value, announced)
-            if scale is None:
-                continue
-            key = (round(box[0]), round(box[1]), scale)
-            found.setdefault(key, ScaleLabel(nice_scale(scale), box, size, text.strip(), announced))
+            if _believable(scale, sep, announced):
+                key = (round(box[0]), round(box[1]), scale)
+                found.setdefault(key, ScaleLabel(nice_scale(scale), box, size, text.strip(), announced))
     labels = list(found.values())
     # Tiny print (e.g. 1 mm high view names drawn by the CAD program next
     # to each view) is not meant to be read; real titles are much larger.
@@ -228,21 +231,17 @@ def _groups(page: pymupdf.Page, cell: float) -> list[tuple[float, float, float, 
     the cells it covers plus a one-cell margin, and touching cells form a
     group. Shapes as big as half the page (sheet frames) are left out:
     they would join everything into one group."""
-    origin = page.rect
     width, height = page.rect.width, page.rect.height
     cols, rows = int(width / cell) + 2, int(height / cell) + 2
     marked = bytearray(cols * rows)
-    turn = page.rotation_matrix  # the box list is for the unrotated page, like text
     for _, box in page.get_bboxlog():
-        r = pymupdf.Rect(box) * turn
-        r.normalize()
-        x0, y0, x1, y1 = r
-        if x1 - x0 > width / 2 or y1 - y0 > height / 2 or x1 < x0 or y1 < y0:
+        x0, y0, x1, y1 = _turned(page, box)
+        if x1 - x0 > width / 2 or y1 - y0 > height / 2:
             continue
-        c0 = max(int((x0 - origin.x0) / cell) - 1, 0)
-        c1 = min(int((x1 - origin.x0) / cell) + 1, cols - 1)
-        r0 = max(int((y0 - origin.y0) / cell) - 1, 0)
-        r1 = min(int((y1 - origin.y0) / cell) + 1, rows - 1)
+        c0 = max(int(x0 / cell) - 1, 0)
+        c1 = min(int(x1 / cell) + 1, cols - 1)
+        r0 = max(int(y0 / cell) - 1, 0)
+        r1 = min(int(y1 / cell) + 1, rows - 1)
         for r in range(r0, r1 + 1):
             marked[r * cols + c0 : r * cols + c1 + 1] = b"\x01" * (c1 - c0 + 1)
     boxes = []
