@@ -287,25 +287,27 @@ class MainWindow(QMainWindow):
         self.file_label = QLabel("")
         self.file_label.setObjectName("muted")
         self.open_button = QPushButton("Open PDF…")
+        self.open_button.setObjectName("primary")  # same style as "Convert to DWFx…"
         self.open_button.clicked.connect(self.choose_pdf)
-        top = QHBoxLayout()
-        top.addWidget(title)
-        top.addSpacing(12)
-        top.addWidget(self.file_label, 1)
         # The only thing in the app that goes online, and only when clicked.
         self.update_button = QPushButton("Check for updates")
         self.update_button.setToolTip("Ask GitHub whether a newer version of pdf2dwfx is available")
         self.update_button.clicked.connect(self.check_for_updates)
-        top.addWidget(self.update_button)
-        top.addSpacing(16)
         dark_label = QLabel("Dark mode")
         dark_label.setObjectName("muted")
         self.dark_switch = Switch()
         self.dark_switch.setToolTip("Light or dark colours (remembered next time)")
         self.dark_switch.toggled.connect(lambda on: self.set_appearance("dark" if on else "light"))
+        # Left to right: name, open file, dark mode, check for updates, open PDF.
+        top = QHBoxLayout()
+        top.addWidget(title)
+        top.addSpacing(12)
+        top.addWidget(self.file_label, 1)
         top.addWidget(dark_label)
         top.addWidget(self.dark_switch)
         top.addSpacing(16)
+        top.addWidget(self.update_button)
+        top.addSpacing(8)
         top.addWidget(self.open_button)
 
         # Centre: a start screen until a PDF is open, then all pages side by side.
