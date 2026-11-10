@@ -36,7 +36,7 @@ def reports_in_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def secret_pdf(tmp_path: Path) -> Path:
     folder = tmp_path / SECRET
     folder.mkdir()
-    return layers_pdf(folder / f"{SECRET} - Planta.pdf")
+    return layers_pdf(folder / f"{SECRET} - Plan.pdf")
 
 
 def fail_with_path(pdf: Path) -> Exception:

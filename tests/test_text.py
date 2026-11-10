@@ -60,7 +60,7 @@ def test_text_is_converted_without_warnings(tmp_path: Path) -> None:
 def test_text_is_searchable(tmp_path: Path) -> None:
     pdf, out, _, _, page, _ = _convert(tmp_path)
     texts = [g.get("UnicodeString") for g in page.iter(NS_XPS + "Glyphs")]
-    assert "PLANTA PISO 1 | 1:100" in texts
+    assert "FLOOR PLAN 1 | 1:100" in texts
     assert "Sala de estar 25,40 m2" in texts
     assert "ALCADO NORTE" in texts
     # A viewer reading the DWFx finds the same text as in the PDF.
@@ -99,7 +99,7 @@ def test_rotated_text_gets_rotation(tmp_path: Path) -> None:
 
 def test_text_size_matches_pdf(tmp_path: Path) -> None:
     _, _, _, _, page, w2x = _convert(tmp_path)
-    title = [g for g in page.iter(NS_XPS + "Glyphs") if g.get("UnicodeString").startswith("PLANTA")][0]
+    title = [g for g in page.iter(NS_XPS + "Glyphs") if g.get("UnicodeString").startswith("FLOOR")][0]
     expected = 14 * UNITS_PER_MM * 25.4 / 72  # 14 pt in grid units
     assert math.isclose(float(title.get("FontRenderingEmSize")), expected, rel_tol=0.01)
     heights = {int(f.get("Height")) for f in w2x.iter("Font")}
@@ -132,7 +132,7 @@ def test_text_on_a_layer(tmp_path: Path) -> None:
         if el.tag == NS_XPS + "Glyphs":
             layer_of[el.get("UnicodeString")] = names[current]
     assert layer_of["On a layer"] == "TEXT"
-    assert layer_of["PLANTA PISO 1 | 1:100"] == "0"
+    assert layer_of["FLOOR PLAN 1 | 1:100"] == "0"
 
 
 def test_words_placed_by_position_stay_in_place(tmp_path: Path) -> None:

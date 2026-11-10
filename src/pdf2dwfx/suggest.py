@@ -5,9 +5,9 @@ Two sources, best first:
 1. **Scale data stored in the PDF** ("measurement viewports", /VP with
    /Measure): some CAD programs save each viewport's area and scale, the
    data Acrobat's measuring tool uses. When present it is exact.
-2. **Scale texts on the page**, e.g. "ESCALA: 1 : 100" in the title block
-   or "PLANTA PISO 1 | 1:100" under a drawing. The title-block scale
-   (recognised by a word like ESCALA/SCALE next to it) becomes the sheet
+2. **Scale texts on the page**, e.g. "SCALE: 1 : 100" in the title block
+   or "FLOOR PLAN 1 | 1:100" under a drawing. The title-block scale
+   (recognised by a word like SCALE next to it) becomes the sheet
    scale. A drawing titled with a different scale (a 1:5 detail on a 1:50
    sheet) gets a viewport around that drawing, found by grouping nearby
    shapes and giving each group to the nearest drawing title.
@@ -21,6 +21,7 @@ only compared with each other, and sizes relative to the page.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 
@@ -34,9 +35,27 @@ from .scale import (
 PT_PER_MM = 72 / 25.4
 METRES_PER_PT = 0.0254 / 72
 
-# Words that announce a scale in a title block (Portuguese, English,
-# Spanish, French, Italian, German).
-_KEYWORD = re.compile(r"(?i)(?<![a-z])(esc(?:ala)?s?|scale|[ée]chelle|scala|ma(?:ss|ß)stab)(?![a-z])")
+# Words that announce a scale in a title block, for the ten most spoken
+# languages (English, Mandarin, Hindi, Spanish, Arabic, French, Bengali,
+# Portuguese, Russian, Urdu) plus Italian and German.
+# Written in full only where a word has one form; the others are stems,
+# because Hindi, Russian and Urdu change the ending of a word.
+_WORDS = ("比例", "पैमान", "स्केल", "স্কেল", "মাপনী", "масштаб")
+_RIGHT_TO_LEFT_WORDS = ("مقياس", "پيمان", "اسكيل")  # Arabic, Urdu (spelled as _SAME_LETTERS leaves them)
+_KEYWORD_PATTERN = (
+    r"(?<![a-z])(?:esc(?:ala)?s?|scale|[ée]ch(?:elle)?s?|scala|ma(?:ss|ß)stab)(?![a-z])"
+    r"|(?<!\w)(?-i:М)(?=\.?\s*(?:1\s*:|$))"  # Russian shorthand "М 1:100" (capital only: "м" is metres)
+    # Some PDFs store right-to-left text backwards, so look for that too.
+    + "".join(f"|{w}" for w in (*_WORDS, *_RIGHT_TO_LEFT_WORDS, *(w[::-1] for w in _RIGHT_TO_LEFT_WORDS)))
+)
+_KEYWORD = re.compile(_KEYWORD_PATTERN, re.IGNORECASE)
+_KEYWORD_THEN_NUMBER = re.compile(rf"(?:{_KEYWORD_PATTERN})[:.]?(?=\d)", re.IGNORECASE)
+# Wide Chinese punctuation ("1：100") and Arabic letters stored in their
+# joined-up shapes: the plain characters are what the patterns look for.
+# Arabic and Urdu use different characters for these same letters, and which
+# one a PDF stores depends on the font.
+_SAME_LETTERS = str.maketrans("یىکہ", "ييكه")
+_SPECIAL_FORMS = re.compile("[\uFB50-\uFDFF\uFE70-\uFEFE\uFF01-\uFF5E]+")
 # "1:100", "1 : 50", "1/50", "1_50", "1-50", "1 to 50", "2:1", "1:2,5" ...
 # Not part of a longer chain of numbers ("1-12-2024", "PR_1_50.dwg").
 _RATIO = re.compile(
@@ -66,7 +85,7 @@ class ScaleLabel:
     box: tuple[float, float, float, float]  # on the sheet, points from top-left
     size: float  # font size in points
     text: str
-    title_block: bool  # announced by a word like ESCALA: the sheet's scale
+    title_block: bool  # announced by a word like SCALE: the sheet's scale
 
 
 def nice_scale(value: float) -> float:
@@ -172,8 +191,16 @@ def _written_scales(text: str) -> list[tuple[int, float, str]]:
     return [(start, scale, sep) for start, scale, sep in found if scale]
 
 
+def _plain_text(text: str) -> str:
+    """A line of the drawing in the plain form the patterns can read."""
+    text = unicodedata.normalize("NFC", text)
+    text = _SPECIAL_FORMS.sub(lambda m: unicodedata.normalize("NFKC", m.group()), text).translate(_SAME_LETTERS)
+    # No space after the word ("比例1:100", "SCALE:1:100"): a number needs a gap before it.
+    return _KEYWORD_THEN_NUMBER.sub(lambda m: m.group() + " ", text)
+
+
 def _believable(scale: float, sep: str, announced: bool) -> bool:
-    """Is this really a scale? Next to a word like ESCALA, or written the
+    """Is this really a scale? Next to a word like SCALE, or written the
     imperial way, always. Otherwise only usual scales ("1:7" rarely is
     one); "1/2" is more often a fraction and "1-2" or "1_2" a range or a
     number, so "/" needs the word, and "-", "_", "to" a scale of 1:5 or less."""
@@ -192,8 +219,8 @@ def scale_labels(page: pymupdf.Page) -> list[ScaleLabel]:
             if line["spans"]:
                 text = "".join(s["text"] for s in line["spans"])
                 size = max(s["size"] for s in line["spans"])
-                lines.append((text, _turned(page, line["bbox"]), size))
-    # Lines that are only an announcing word, e.g. "ESCALA:" in a title
+                lines.append((_plain_text(text), _turned(page, line["bbox"]), size))
+    # Lines that are only an announcing word, e.g. "SCALE:" in a title
     # block cell, with the value in the line below or beside it.
     keyword_lines = [box for text, box, _ in lines if _KEYWORD.search(text) and not _written_scales(text)]
     found: dict[tuple, ScaleLabel] = {}

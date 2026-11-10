@@ -12,7 +12,7 @@ import pytest
 from pdf2dwfx.convert import convert
 from pdf2dwfx.prepare import UNITS_PER_MM
 from pdf2dwfx.scale import CONFIRMED, NO_SCALE, SUGGESTED, PageScale, Viewport, parse_scale
-from pdf2dwfx.suggest import scale_labels, suggest
+from pdf2dwfx.suggest import _KEYWORD, _plain_text, _written_scales, scale_labels, suggest
 from pdf2dwfx.w2x import units_transform
 from synthetic import MM, PAPER_SIZES, path_points, scale_pdf, scale_sheet_layout, text_pdf
 
@@ -110,12 +110,12 @@ def test_scale_texts() -> None:
     font = pymupdf.Font("cjk")
     page.insert_font(fontname="F1", fontbuffer=font.buffer)
     texts = [
-        ((20, 40), "FOLHA 21 / 28", 12),  # sheet number, not a scale
-        ((20, 80), "parede 1/2 tijolo", 12),  # a fraction
+        ((20, 40), "SHEET 21 / 28", 12),  # sheet number, not a scale
+        ((20, 80), "wall 1/2 brick", 12),  # a fraction
         ((20, 120), "ESC. 1/20", 12),  # announced: "/" allowed
-        ((20, 160), "CORTE AA' 1:50", 12),
-        ((20, 200), "nota 1:7", 12),  # unusual scale, not announced
-        ((20, 240), "VISTA 1:100", 3),  # tiny print
+        ((20, 160), "SECTION AA' 1:50", 12),
+        ((20, 200), "note 1:7", 12),  # unusual scale, not announced
+        ((20, 240), "VIEW 1:100", 3),  # tiny print
         ((20, 280), "ESCALA", 6),
         ((20, 292), "1 : 100", 10),  # value under the word ESCALA
     ]
@@ -285,7 +285,7 @@ def test_several_scales_warning(tmp_path: Path) -> None:
 
 
 def test_one_scale_no_warning(tmp_path: Path) -> None:
-    pdf = scale_pdf(tmp_path / "s.pdf", detail_title="DETALHE A 1:50")
+    pdf = scale_pdf(tmp_path / "s.pdf", detail_title="DETAIL A 1:50")
     s = suggest(pymupdf.open(pdf)[0])
     assert s.scale == 50 and not s.viewports and not s.warning
 
@@ -296,13 +296,50 @@ def test_scale_symbols_typed_by_user(text: str) -> None:
 
 
 @pytest.mark.parametrize(
+    "text, scale",
+    [
+        ("SCALE 1:7", 7), ("ESCALA 1:7", 7), ("ESC. 1/7", 7), ("SCALE:1:7", 7), ("ÉCHELLE 1:7", 7), ("Ech. 1/7", 7),
+        ("ÉCHELLE 1:7", 7),  # the accent stored as a separate character
+        ("比例 1:7", 7), ("比例1:7", 7), ("比例：1：7", 7), ("比例尺 1:7", 7),
+        ("पैमाना 1:7", 7), ("पैमाने 1:7", 7), ("स्केल 1:7", 7), ("स्केल १:७", 7),
+        ("مقياس 1:7", 7), ("مقياس الرسم ١:٧", 7), ("بمقياس 1:7", 7),
+        ("ﻣﻘﻴﺎﺱ 1:7", 7),  # Arabic in joined-up shapes
+        ("سايقم 1:7", 7),  # Arabic stored backwards
+        ("স্কেল 1:7", 7), ("মাপনী ১:৭", 7),
+        ("МАСШТАБ 1:7", 7), ("Масштаб1:7", 7), ("в масштабе 1:7", 7), ("М 1:7", 7), ("М1:7", 7),
+        ("پیمانہ 1:7", 7), ("اسکیل 1:7", 7), ("مقیاس 1:7", 7),
+    ],
+)
+def test_scale_words_in_other_languages(text: str, scale: float) -> None:
+    # 1:7 is unusual, so it only counts if the word was recognised.
+    plain = _plain_text(text)
+    found = _written_scales(plain)
+    assert [s for _, s, _ in found] == [scale]
+    assert _KEYWORD.search(plain[: found[0][0]])
+
+
+@pytest.mark.parametrize("text", ["м 1:7", "M 1:7", "NOTE 1:7", "пример 1:7", "ALÇADO 1:7"])
+def test_words_that_do_not_announce_a_scale(text: str) -> None:
+    plain = _plain_text(text)
+    assert not _KEYWORD.search(plain[: _written_scales(plain)[0][0]])
+
+
+def test_chinese_title_block_on_a_page() -> None:
+    doc = pymupdf.open()
+    page = doc.new_page(width=600, height=400)
+    page.insert_font(fontname="F1", fontbuffer=pymupdf.Font("cjk").buffer)
+    page.insert_text((20, 100), "比例：1：7", fontname="F1", fontsize=12)
+    assert [(label.scale, label.title_block) for label in scale_labels(page)] == [(7, True)]
+
+
+@pytest.mark.parametrize(
     "text, found",
     [
-        ("PLANTA 1:50", 50), ("PLANTA 1_50", 50), ("PLANTA 1-50", 50), ("PLANTA 1 to 50", 50),
-        ("CORTE 1 - 20", 20), ("DETALHE 1–5", 5),
+        ("PLAN 1:50", 50), ("PLAN 1_50", 50), ("PLAN 1-50", 50), ("PLAN 1 to 50", 50),
+        ("SECTION 1 - 20", 20), ("DETAIL 1–5", 5),
         # not scales: dates, ranges, file names, references
-        ("DATA 1-12-2024", None), ("NOTAS 1-2", None), ("PR2017_PL_1_50.dwg", None),
-        ("IS1-50", None), ("FOLHA 1_2", None), ("ver 1 to 3", None),
+        ("DATE 1-12-2024", None), ("NOTES 1-2", None), ("PR2017_PL_1_50.dwg", None),
+        ("IS1-50", None), ("SHEET 1_2", None), ("see 1 to 3", None),
     ],
 )
 def test_scale_symbols_on_the_page(text: str, found: float | None) -> None:

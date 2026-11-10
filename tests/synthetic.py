@@ -257,7 +257,7 @@ def text_pdf(path: Path) -> Path:
     doc = pymupdf.open()
     page = doc.new_page(width=w, height=h)
     page.insert_font(fontname="F1", fontbuffer=pymupdf.Font("cjk").buffer)
-    page.insert_text((50, 100), "PLANTA PISO 1 | 1:100", fontname="F1", fontsize=14)
+    page.insert_text((50, 100), "FLOOR PLAN 1 | 1:100", fontname="F1", fontsize=14)
     page.insert_text((50, 140), "Sala de estar 25,40 m2", fontname="F1", fontsize=9, color=(0, 0, 0.8))
     page.insert_text((300, 400), "ALCADO NORTE", fontname="F1", fontsize=10, rotate=90)
     ocg = doc.add_ocg("TEXT")
@@ -298,7 +298,7 @@ def scale_sheet_layout(paper_mm: tuple[float, float]) -> dict[str, tuple[float, 
         "detail": (0.55 * w, 0.10 * h, 0.80 * w, 0.40 * h),  # 1:5 drawing (clipped)
         "detail_title": (0.55 * w, 0.43 * h, 0, 0),
         "untitled": (0.55 * w, 0.55 * h, 0.75 * w, 0.75 * h),  # no scale written
-        "keyword": (0.86 * w, 0.90 * h, 0, 0),  # "ESCALA:"
+        "keyword": (0.86 * w, 0.90 * h, 0, 0),  # "SCALE:"
         "title_scale": (0.86 * w, 0.92 * h, 0, 0),  # "1 : 50"
         "sheet_number": (0.86 * w, 0.97 * h, 0, 0),  # "3 / 28": not a scale
     }
@@ -312,14 +312,14 @@ def scale_pdf(
     title_block_scale: str = "1 : 50",
     measure_data: bool = False,
     clipped: bool = True,
-    plan_title: str = "PLANTA PISO 1 | 1:50",
-    detail_title: str = "DETALHE A 1:5",
-    keyword: str = "ESCALA:",
+    plan_title: str = "FLOOR PLAN 1 | 1:50",
+    detail_title: str = "DETAIL A 1:5",
+    keyword: str = "SCALE:",
 ) -> Path:
     """A sheet like an architect's layout: a 1:50 plan and a 1:5 detail,
     each clipped to its viewport (as CAD programs export them) with its
     title below it, an untitled detail, and a title block with
-    "ESCALA: 1 : 50" and a sheet number "3 / 28".
+    "SCALE: 1 : 50" and a sheet number "3 / 28".
 
     ``rotate``: the page is stored turned (PDF /Rotate) but drawn so the
     user sees the same layout. ``crop_offset``: the visible page (crop
