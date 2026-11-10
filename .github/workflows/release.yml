@@ -82,6 +82,25 @@ jobs:
       id-token: write  # sign the attestations
       attestations: write
     steps:
+      # Full history and tags, to list the commits since the previous version.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Commits go straight to main (no pull requests), so GitHub's generated
+      # notes would be empty: list the commit titles instead.
+      - name: Release notes
+        run: |
+          prev=$(git describe --tags --abbrev=0 --match 'v*' "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          {
+            echo "## Changes"
+            echo
+            git log --no-merges --format='- %s' ${prev:+"$prev.."}"$GITHUB_REF_NAME"
+            if [ -n "$prev" ]; then
+              echo
+              echo "**Full changelog:** https://github.com/$GITHUB_REPOSITORY/compare/$prev...$GITHUB_REF_NAME"
+            fi
+          } > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
       - uses: actions/download-artifact@v4
         with:
           path: files
@@ -95,4 +114,4 @@ jobs:
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" files/* --repo "$GITHUB_REPOSITORY" --title "pdf2dwfx $GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" files/* --repo "$GITHUB_REPOSITORY" --title "pdf2dwfx $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
