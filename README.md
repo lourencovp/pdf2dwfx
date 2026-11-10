@@ -31,7 +31,7 @@ These warnings appear because the app is not digitally signed yet (planned for a
 
 ## Privacy
 
-The app works **fully offline**: it never connects to the internet and sends no telemetry or automatic reports. Your drawings never leave your computer. If the app fails, it saves a report on your computer (no drawing content or file names) and you decide whether to share it on GitHub.
+The app works **fully offline**: it never connects to the internet by itself and sends no telemetry or automatic reports. Your drawings never leave your computer. The only exception is the **Check for updates** button: when you click it, the app asks GitHub for the latest version number (sending nothing about you or your drawings) and, if there is a newer one, offers to open the download page in your browser. If the app fails, it saves a report on your computer (no drawing content or file names) and you decide whether to share it on GitHub.
 
 ## For developers
 

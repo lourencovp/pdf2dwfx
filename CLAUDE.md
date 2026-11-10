@@ -20,7 +20,7 @@ Converts vector PDF drawings (exported from CAD software) into **DWFx** files th
 - **Digital signing:** **out of scope** until a later milestone.
 
 ## Core principles (non-negotiable)
-- **Fully local.** The app never connects to the internet: no telemetry, no update checker, no automatic crash upload, no networking libraries.
+- **Fully local.** The app never connects to the internet by itself: no telemetry, no automatic update checks, no automatic crash upload, no networking libraries (standard library only). **One exception (owner's decision):** a **Check for updates** button that, only when clicked, asks GitHub's API for the latest release (`updates.py`), sending nothing about the user or their drawings, and offers to open the download page in the browser. The app never downloads or installs anything itself.
 - A CI test runs conversions with network access blocked; it must always pass.
 - **Crash reporting is user-controlled:** on a crash, write a plain-text report to a local file and show it in a dialog with buttons: **Report on GitHub** (opens a new GitHub issue in the browser with a short summary filled in; the user pastes the report and submits it themselves), **Copy to clipboard** and **Open report folder**. No email button (owner's decision: no email address in the app). Reports contain only error details, app version, OS, and harmless PDF statistics (page count, page sizes, number of layers/paths) — **never drawing content, text from drawings, or file names**.
 

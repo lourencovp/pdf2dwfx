@@ -17,13 +17,14 @@ from __future__ import annotations
 
 import multiprocessing
 import sys
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 import pymupdf
-from PySide6.QtCore import QSettings, QSize, Qt, QThread, Signal
-from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPen, QPixmap
+from PySide6.QtCore import QObject, QSettings, QSize, Qt, QThread, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractButton,
     QAbstractItemView,
@@ -43,7 +44,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import __version__, theme
+from . import __version__, theme, updates
 from .convert import convert
 from .crash import make_report, save_report
 from .crash_dialog import CrashDialog
@@ -240,6 +241,30 @@ class Converter(QThread):
             self.done.emit(warnings)
 
 
+class UpdateChecker(QObject):
+    """Asks GitHub for the latest version in the background (only when the
+    user clicks "Check for updates"), so the window never freezes waiting.
+
+    A daemon thread rather than a QThread: closing the app must not wait
+    for a slow connection. Qt delivers the signals in the window's thread."""
+
+    found = Signal(object)  # updates.Release
+    failed = Signal(str)
+    finished = Signal()
+
+    def start(self) -> None:
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    def run(self) -> None:
+        try:
+            self.found.emit(updates.latest_release())
+        except updates.UpdateCheckFailed as error:
+            self.failed.emit(str(error))
+        finally:
+            self.finished.emit()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, preferences: QSettings | None = None) -> None:
         super().__init__()
@@ -251,6 +276,7 @@ class MainWindow(QMainWindow):
         self.scales: dict[int, PageScale] = {}
         self.loader: Loader | None = None
         self.converter: Converter | None = None
+        self.update_checker: UpdateChecker | None = None
 
         self.setWindowIcon(theme.icon())
         self.setAcceptDrops(True)  # a PDF can be dropped onto the window
@@ -266,6 +292,12 @@ class MainWindow(QMainWindow):
         top.addWidget(title)
         top.addSpacing(12)
         top.addWidget(self.file_label, 1)
+        # The only thing in the app that goes online, and only when clicked.
+        self.update_button = QPushButton("Check for updates")
+        self.update_button.setToolTip("Ask GitHub whether a newer version of pdf2dwfx is available")
+        self.update_button.clicked.connect(self.check_for_updates)
+        top.addWidget(self.update_button)
+        top.addSpacing(16)
         dark_label = QLabel("Dark mode")
         dark_label.setObjectName("muted")
         self.dark_switch = Switch()
@@ -671,6 +703,53 @@ class MainWindow(QMainWindow):
     def tell(self, title: str, text: str) -> None:
         """Show a message (tests replace this to see what would be shown)."""
         QMessageBox.information(self, title, text)
+
+    def ask(self, title: str, text: str, yes: str) -> bool:
+        """Ask a question with a "yes" button named `yes` (tests replace this)."""
+        box = QMessageBox(QMessageBox.Icon.Question, title, text, parent=self)
+        yes_button = box.addButton(yes, QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Not now", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        return box.clickedButton() is yes_button
+
+    def open_url(self, url: str) -> None:
+        """Open a page in the user's browser (tests replace this)."""
+        QDesktopServices.openUrl(QUrl(url))
+
+    def check_for_updates(self) -> None:
+        if self.update_checker is not None:
+            return  # already asking
+        self.update_button.setEnabled(False)
+        self.update_button.setText("Checking…")
+        self.update_checker = UpdateChecker()
+        self.update_checker.found.connect(self.update_found)
+        self.update_checker.failed.connect(self.update_failed)
+        self.update_checker.finished.connect(self.update_check_finished)
+        self.update_checker.start()
+
+    def update_found(self, release: updates.Release) -> None:
+        if updates.is_newer(release.version):
+            text = (
+                f"pdf2dwfx {release.version} is available (you have {__version__}).\n\n"
+                "Open the download page in your browser?"
+            )
+            if self.ask("Update available", text, "Open download page"):
+                self.open_url(release.page)
+        else:
+            self.tell("No update", f"You have the latest version of pdf2dwfx ({__version__}).")
+
+    def update_failed(self, reason: str) -> None:
+        text = (
+            "Could not check for updates. Are you connected to the internet?\n\n"
+            f"({reason})\n\nYou can also look on the download page yourself."
+        )
+        if self.ask("Check for updates", text, "Open download page"):
+            self.open_url(updates.RELEASES_PAGE)
+
+    def update_check_finished(self) -> None:
+        self.update_checker = None
+        self.update_button.setText("Check for updates")
+        self.update_button.setEnabled(True)
 
     def update_buttons(self) -> None:
         busy = self.loader is not None or self.converter is not None
