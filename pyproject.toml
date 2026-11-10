@@ -1,7 +1,7 @@
 [project]
 name = "pdf2dwfx"
 version = "0.2.1"
-description = "Convert vector PDF drawings into DWFx files for municipal architecture submissions"
+description = "Convert vector PDF drawings into DWFx files"
 readme = "README.md"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE"]
